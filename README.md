@@ -1,6 +1,6 @@
 # caracal-rag
 
-Caracal RAG - a retrieval-augmented generation toolkit (project skeleton).
+Caracal RAG - a retrieval-augmented generation toolkit.
 
 ## Project structure
 
@@ -10,14 +10,16 @@ tests/                    pytest test suite
 .github/workflows/ci.yml  CI: lint (ruff) + tests (pytest) on PRs and main
 ```
 
-## Getting started
+## What is caracal-rag?
 
-Requires Python 3.10+.
+`caracal-rag` provides a local indexing pipeline that downloads knowledge sources, chunks documents, generates embeddings through a local LiteLLM proxy, and stores vectors in a remote Chroma database. It also exposes an MCP server so an LLM agent can search indexed knowledge.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-ruff check .
-pytest -q
-```
+## Commands
+
+- `python -m caracal_rag check`
+- `python -m caracal_rag index`
+- `python -m caracal_rag index --source fiteo-api`
+
+## Configuration
+
+Copy `config/sources.example.yaml` into your workspace and configure LiteLLM, Chroma, and source URLs there. Provide secrets via environment variables; do not commit credentials.

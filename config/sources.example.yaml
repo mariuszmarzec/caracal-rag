@@ -1,0 +1,16 @@
+embedding:
+  model: text-embedding-3-small
+  api_base: http://localhost:4000
+
+chroma:
+  host: localhost
+  port: 8000
+  collection: fiteo
+
+sources:
+  - name: fiteo-api
+    type: markdown
+    urls:
+      - https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/login.md
+      - https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/logout.md
+      - https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/users_get.md
