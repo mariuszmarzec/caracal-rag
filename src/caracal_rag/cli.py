@@ -14,7 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     index_parser = subparsers.add_parser("index")
     index_parser.add_argument("--source", default=None, help="Index only the named source")
 
-    check_parser = subparsers.add_parser("check")
+    subparsers.add_parser("check")
 
     return parser
 

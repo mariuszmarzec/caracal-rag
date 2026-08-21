@@ -38,7 +38,6 @@ sys.modules["litellm"] = litellm_stub
 from caracal_rag.chunking import chunk_document, chunk_markdown, infer_type  # noqa: E402
 from caracal_rag.config import AppConfig, SourceConfig  # noqa: E402
 from caracal_rag.indexing import Indexer  # noqa: E402
-from caracal_rag.mcp import CaracalMcpServer, SearchResult  # noqa: E402
 from caracal_rag.sources import Document  # noqa: E402
 
 
@@ -129,8 +128,14 @@ def test_indexing_idempotency(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CARACAL_CHROMA_PORT", "8000")
     monkeypatch.setenv("CARACAL_CHROMA_COLLECTION", "test")
 
-    monkeypatch.setattr("caracal_rag.indexing._chroma_client", lambda *args, **kwargs: FakeChroma())
-    monkeypatch.setattr("caracal_rag.indexing.embed_texts", lambda texts, **kwargs: [[0.1, 0.2] for _ in texts])
+    monkeypatch.setattr(
+        "caracal_rag.indexing._chroma_client",
+        lambda *args, **kwargs: FakeChroma(),
+    )
+    monkeypatch.setattr(
+        "caracal_rag.indexing.embed_texts",
+        lambda texts, **kwargs: [[0.1, 0.2] for _ in texts],
+    )
 
     fake_doc = Document(
         source="api",

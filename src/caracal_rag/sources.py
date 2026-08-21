@@ -29,8 +29,8 @@ def fetch_text(url: str, timeout: int = 30) -> str:
 
 
 def load_documents_from_config(config_path: str) -> Iterable[Document]:
-    from caracal_rag.config import AppConfig, SourceConfig
     from caracal_rag.chunking import infer_type
+    from caracal_rag.config import AppConfig
 
     app_config = AppConfig.from_yaml(config_path)
 

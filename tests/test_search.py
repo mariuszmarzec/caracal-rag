@@ -74,7 +74,12 @@ def test_search_formatting(monkeypatch) -> None:
     monkeypatch.setattr("caracal_rag.mcp.embed_texts", lambda texts, **kwargs: [[0.1, 0.2]])
     monkeypatch.setattr("caracal_rag.mcp.Server", FakeServer)
     results = [
-        SearchResult(source="api", document="login.md", url="https://example.com/login.md", content="Login details.")
+        SearchResult(
+            source="api",
+            document="login.md",
+            url="https://example.com/login.md",
+            content="Login details.",
+        )
     ]
     server = CaracalMcpServer(AppConfig.from_yaml("config/sources.example.yaml"))
     text = server._format(results)

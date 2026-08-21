@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from mcp.server import Server
-from mcp.types import Tool, TextContent
+from mcp.types import TextContent, Tool
 
 from caracal_rag.config import AppConfig
 from caracal_rag.embeddings import embed_texts
@@ -40,7 +40,11 @@ class CaracalMcpServer:
                         "type": "object",
                         "properties": {
                             "query": {"type": "string", "description": "Search query."},
-                            "top_k": {"type": "integer", "description": "Number of results.", "default": 5},
+                            "top_k": {
+                                "type": "integer",
+                                "description": "Number of results.",
+                                "default": 5,
+                            },
                         },
                         "required": ["query"],
                     },
