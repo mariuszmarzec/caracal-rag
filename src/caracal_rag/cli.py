@@ -16,6 +16,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("check")
 
+    mcp_parser = subparsers.add_parser("mcp")
+    mcp_parser.add_argument("--host", default=None, help="MCP server host (unused; stdio transport)")
+    mcp_parser.add_argument("--port", default=None, help="MCP server port (unused; stdio transport)")
+
     return parser
 
 
@@ -33,6 +37,26 @@ def run_check() -> None:
     print("ok")
 
 
+def run_mcp(host_override: str | None = None, port_override: str | None = None) -> None:
+    from caracal_rag.mcp import CaracalMcpServer
+    import asyncio
+
+    config = AppConfig.from_yaml("config/sources.example.yaml")
+
+    # Allow host/port overrides via CLI for connection debugging
+    if host_override is not None:
+        config.chroma.host = host_override
+    if port_override is not None:
+        config.chroma.port = int(port_override)
+
+    server = CaracalMcpServer(config)
+
+    async def _run() -> None:
+        await server.server.run_stdio_async()
+
+    asyncio.run(_run())
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -40,6 +64,8 @@ def main(argv: list[str] | None = None) -> None:
         run_index(args.source)
     elif args.command == "check":
         run_check()
+    elif args.command == "mcp":
+        run_mcp(args.host, args.port)
     else:
         parser.print_help()
         sys.exit(1)
