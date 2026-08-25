@@ -24,7 +24,7 @@ class FakeLiteLLM:
     api_base = None
     api_key = None
     @staticmethod
-    def embedding(model: str, input: list[str]) -> dict:
+    def embedding(*args, **kwargs) -> dict:
         return {"data": [{"embedding": [0.1, 0.2]}]}
 litellm_stub.embedding = FakeLiteLLM.embedding
 litellm_stub.api_base = None

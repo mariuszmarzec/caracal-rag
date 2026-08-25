@@ -13,10 +13,21 @@ class SourceConfig:
     type: str
     urls: list[str] | None = None
     url: str | None = None
+    repo: str | None = None
+    path: str | None = None
+    branch: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.urls and not self.url:
-            raise ValueError(f"Source {self.name!r} must define urls or url")
+        has_urls = self.urls or self.url
+        if self.type == "github_md_doc_dir":
+            if not self.repo or not self.path:
+                raise ValueError(
+                    f"Source {self.name!r} of type github_md_doc_dir must define repo and path"
+                )
+        elif not has_urls:
+            raise ValueError(
+                f"Source {self.name!r} must define urls, url, or repo+path"
+            )
 
 
 @dataclass
@@ -34,6 +45,11 @@ class ChromaConfig:
     ssl: bool = os.getenv("CARACAL_CHROMA_SSL", "false").lower() in {"1", "true", "yes"}
 
 
+def _coerce_source(item: dict[str, Any]) -> SourceConfig:
+    """Coerce a raw source dict into a SourceConfig."""
+    return SourceConfig(**item)
+
+
 @dataclass
 class AppConfig:
     sources: list[SourceConfig]
@@ -45,7 +61,7 @@ class AppConfig:
         with open(path, "r", encoding="utf-8") as fh:
             data: dict[str, Any] = yaml.safe_load(fh) or {}
 
-        sources = [SourceConfig(**item) for item in data.get("sources", [])]
+        sources = [_coerce_source(item) for item in data.get("sources", [])]
         embedding_data = data.get("embedding", {}) or {}
         chroma_data = data.get("chroma", {}) or {}
 

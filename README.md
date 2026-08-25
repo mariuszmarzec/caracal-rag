@@ -23,3 +23,10 @@ tests/                    pytest test suite
 ## Configuration
 
 Copy `config/sources.example.yaml` into your workspace and configure LiteLLM, Chroma, and source URLs there. Provide secrets via environment variables; do not commit credentials.
+
+### Source Types
+
+Two source types are supported in the `sources` list:
+
+* `markdown` – index individual markdown files by their raw URLs.
+* `github_md_doc_dir` – recursively fetches all `.md` files from a GitHub repository directory. This is useful when an entire docs folder should be indexed without listing each file individually.

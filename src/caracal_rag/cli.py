@@ -28,7 +28,7 @@ def run_index(source: str | None) -> None:
 def run_check() -> None:
     config = AppConfig.from_yaml("config/sources.example.yaml")
     print(f"sources={len(config.sources)}")
-    print(f"embedding_model={config.embedding.model}")
+    print(f"embedding_api_base={config.embedding.api_base}")
     print(f"chroma={config.chroma.host}:{config.chroma.port}")
     print("ok")
 
