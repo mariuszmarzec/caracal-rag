@@ -63,7 +63,6 @@ class CaracalMcpServer:
     def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
         embedding = embed_texts(
             [query],
-            model=self.config.embedding.model,
             api_base=self.config.embedding.api_base,
             api_key=self.config.embedding.api_key,
         )[0]

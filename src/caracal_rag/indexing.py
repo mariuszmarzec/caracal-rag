@@ -44,7 +44,6 @@ class Indexer:
         texts = [chunk.text for chunk in chunks]
         embeddings = embed_texts(
             texts,
-            model=self.config.embedding.model,
             api_base=self.config.embedding.api_base,
             api_key=self.config.embedding.api_key,
         )

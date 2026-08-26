@@ -28,7 +28,7 @@ class FakeLiteLLM:
     api_base = None
     api_key = None
     @staticmethod
-    def embedding(model: str, input: list[str]) -> dict:
+    def embedding(*args, **kwargs) -> dict:
         return {"data": [{"embedding": [0.1, 0.2]}]}
 litellm_stub.embedding = FakeLiteLLM.embedding
 litellm_stub.api_base = None
@@ -44,7 +44,7 @@ from caracal_rag.sources import Document  # noqa: E402
 @pytest.fixture
 def example_config(tmp_path: Path) -> Path:
     data = {
-        "embedding": {"model": "mock", "api_base": "http://localhost:4000"},
+        "embedding": {"api_base": "http://localhost:3001/v1/embeddings"},
         "chroma": {"host": "localhost", "port": 8000, "collection": "test"},
         "sources": [
             {
@@ -64,7 +64,7 @@ def test_config_parsing(example_config: Path) -> None:
     assert len(config.sources) == 1
     assert config.sources[0].name == "api-docs"
     assert config.chroma.collection == "test"
-    assert config.embedding.model == "mock"
+    assert config.embedding.api_base == "http://localhost:3001/v1/embeddings"
 
 
 def test_infer_type() -> None:
