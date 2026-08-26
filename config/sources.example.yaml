@@ -1,0 +1,23 @@
+embedding:
+  api_base: http://localhost:3001/v1/embeddings
+
+chroma:
+  host: localhost
+  port: 8000
+  collection: fiteo
+
+sources:
+  # Simple: list individual markdown files by raw URL
+  - name: fiteo-api
+    type: markdown
+    urls:
+      - https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/login.md
+      - https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/logout.md
+      - https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/users_get.md
+
+  # Or fetch an entire docs directory recursively (github_md_doc_dir)
+  - name: fiteo-docs
+    type: github_md_doc_dir
+    repo: mariuszmarzec/fiteo
+    path: docs
+    branch: master

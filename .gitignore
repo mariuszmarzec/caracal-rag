@@ -1,11 +1,38 @@
 # Python
 __pycache__/
-*.py[cod]
+*.pyc
 *.egg-info/
-build/
+.eggs/
 dist/
+build/
+*.whl
+.env
 .venv/
+venv/
+.envrc
 
-# Test / tooling caches
+# Virtual envs
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
 .pytest_cache/
-.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# Data / runtime artifacts
+chroma_data/
+.chroma/
+index_cache/
