@@ -1,11 +1,56 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyc
 *.egg-info/
 build/
-dist/
-.venv/
+*.whl
+*.so
 
-# Test / tooling caches
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Test artifacts
 .pytest_cache/
-.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Configuration and secrets
+.env
+config/sources.example.yaml
+!config/
+
+# Data / runtime artifacts
+chroma_data/
+.chroma/
+index_cache/
+
+# Package manager logs
+logs/
+*.log
+
+# Distribution / packaging
+build/
+dist/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Temporary files
+*~
+tmp/
+
+# Vagrant
+.vagrant/

@@ -5,17 +5,32 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "caracal-rag"
 version = "0.1.0"
-description = "Caracal RAG - retrieval-augmented generation toolkit (project skeleton)"
+description = "Caracal RAG - retrieval-augmented generation toolkit"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Mariusz Marzec" }]
-dependencies = []
+license = { text = "MIT" }
+dependencies = [
+    "litellm>=1.40",
+    "chromadb>=0.4",
+    "requests>=2.31",
+    "pyyaml>=6.0",
+    "tiktoken>=0.5",
+    "scikit-learn>=1.3",
+    "mcp>=1.0",
+    "openai>=1.0",
+]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
+    "pytest-cov>=4.1",
+    "responses>=0.25",
 ]
+
+[project.scripts]
+caracal-rag = "caracal_rag.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
