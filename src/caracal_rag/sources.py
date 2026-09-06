@@ -93,6 +93,24 @@ def github_md_doc_dir_documents(
         )
 
 
+def _local_documents(source_name: str, path: str) -> Iterable[Document]:
+    """Yield documents from all markdown files in a local directory recursively."""
+    base = Path(path)
+    if not base.is_dir():
+        raise FileNotFoundError(f"Local directory not found: {path}")
+    for md_file in sorted(base.rglob("*.md")):
+        text = md_file.read_text(encoding="utf-8")
+        name = md_file.name
+        yield Document(
+            source=source_name,
+            name=name,
+            url=str(md_file.absolute()),
+            type="markdown",
+            content=text,
+            content_hash=Document.hash(text),
+        )
+
+
 def load_documents_from_source(source) -> Iterable[Document]:
     """Load documents from a single source config based on its type."""
     if source.type == "github_md_doc_dir":
@@ -107,6 +125,14 @@ def load_documents_from_source(source) -> Iterable[Document]:
             path=source.path,
             branch=branch,
         )
+        return
+
+    if source.type == "local":
+        if not source.path:
+            raise ValueError(
+                f"Source {source.name!r} of type local must define path"
+            )
+        yield from _local_documents(source.name, source.path)
         return
 
     urls = source.urls or []
