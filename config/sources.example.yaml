@@ -3,21 +3,11 @@ embedding:
 
 chroma:
   host: localhost
-  port: 8000
-  collection: fiteo
+  port: 3400
+  collection: caracal-base
 
 sources:
-  # Simple: list individual markdown files by raw URL
-  - name: fiteo-api
-    type: markdown
-    urls:
-      - https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/login.md
-      - https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/logout.md
-      - https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/users_get.md
-
-  # Or fetch an entire docs directory recursively (github_md_doc_dir)
-  - name: fiteo-docs
-    type: github_md_doc_dir
-    repo: mariuszmarzec/fiteo
-    path: docs
-    branch: master
+  # Add local knowledge source
+  - name: example_knowledge_funny_jokes
+    type: local
+    path: ./example_knowledge_funny_jokes
