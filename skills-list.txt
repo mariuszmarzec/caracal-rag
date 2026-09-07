@@ -1,0 +1,63 @@
+Available Skills in OpenClaw
+
+=== Built-in Skills (custodian-skills) ===
+- add-model-provider
+- cloud-image-bake
+- configure-channel
+- diagnose-gateway
+
+=== Community Skills ===
+- 1password
+- apple-notes
+- apple-reminders
+- bear-notes
+- blogwatcher
+- blucli
+- camsnap
+- clawhub
+- coding-agent
+- control-ui
+- diagram-maker
+- eightctl
+- gemini
+- gh-issues
+- gifgrep
+- github
+- gog
+- goplaces
+- healthcheck
+- himalaya
+- mcporter
+- meme-maker
+- model-usage
+- nano-pdf
+- node-connect
+- node-inspect-debugger
+- notion
+- obsidian
+- openai-whisper
+- openai-whisper-api
+- openhue
+- oracle
+- ordercli
+- peekaboo
+- python-debugpy
+- sag
+- sherpa-onnx-tts
+- skill-creator
+- songsee
+- sonoscli
+- spike
+- spotify-player
+- summarize
+- taskflow
+- taskflow-inbox-triage
+- things-mac
+- tmux
+- trello
+- video-frames
+- weather
+- xurl
+
+=== Native Plugin Skills ===
+(browser-automation, canvas)
