@@ -186,3 +186,32 @@ def test_infer_type_github_paths():
     assert infer_type("docs/api/login.md") == "markdown"
     assert infer_type("docs/api/data.json") == "json"
     assert infer_type("docs/api/config.yaml") == "yaml"
+
+
+def test_load_documents_from_source_local(tmp_path):
+    """Config with type local loads .md files from a local directory."""
+    docs_dir = tmp_path / "knowledge"
+    docs_dir.mkdir()
+    (docs_dir / "joke1.md").write_text("# Joke 1\n\nWhy did the chicken...")
+    (docs_dir / "joke2.md").write_text("# Joke 2\n\nWhat do you call...")
+    (docs_dir / "notmd.txt").write_text("This should be ignored")
+
+    source = SourceConfig(
+        name="funny-jokes",
+        type="local",
+        path=str(docs_dir),
+    )
+
+    docs = list(load_documents_from_source(source))
+    assert len(docs) == 2
+    names = {d.name for d in docs}
+    assert "joke1.md" in names
+    assert "joke2.md" in names
+    assert all(d.type == "markdown" for d in docs)
+    assert all(d.source == "funny-jokes" for d in docs)
+
+
+def test_local_source_requires_path():
+    """SourceConfig with type local but no path raises."""
+    with pytest.raises(ValueError, match="must define path"):
+        SourceConfig(name="bad", type="local", path=None)

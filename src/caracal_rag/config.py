@@ -24,6 +24,11 @@ class SourceConfig:
                 raise ValueError(
                     f"Source {self.name!r} of type github_md_doc_dir must define repo and path"
                 )
+        elif self.type == "local":
+            if not self.path:
+                raise ValueError(
+                    f"Source {self.name!r} of type local must define path"
+                )
         elif not has_urls:
             raise ValueError(
                 f"Source {self.name!r} must define urls, url, or repo+path"
