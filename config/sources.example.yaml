@@ -10,7 +10,7 @@ sources:
   # Add local knowledge source
   - name: example_knowledge_funny_jokes
     type: local
-    path: /path/to/local/example_knowledge_funny_jokes
+    path: ./example_knowledge_funny_jokes
 
   # Or fetch an entire docs directory recursively (github_md_doc_dir)
   - name: fiteo-docs
