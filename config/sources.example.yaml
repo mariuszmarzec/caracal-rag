@@ -16,5 +16,5 @@ sources:
   - name: fiteo-docs
     type: github_md_doc_dir
     repo: mariuszmarzec/fiteo
-    path: docs
+    path: docs/api
     branch: master

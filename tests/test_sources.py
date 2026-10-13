@@ -1,5 +1,12 @@
+"""Tests for source configuration and API-doc discovery.
+
+External services (GitHub, requests) are mocked with ``unittest.mock`` so the
+tests run without network access.
+"""
+
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,7 +22,6 @@ from caracal_rag.sources import (
 
 
 def _make_response(json_data, links=None):
-    """Create a mock requests.Response."""
     response = MagicMock()
     response.json.return_value = json_data
     response.links = links or {}
@@ -24,74 +30,46 @@ def _make_response(json_data, links=None):
 
 
 def test_github_list_md_files_flat_dir():
-    """Files in a flat directory are listed correctly."""
     contents = [
-        {"type": "file", "name": "login.md", "path": "docs/login.md"},
-        {"type": "file", "name": "config.json", "path": "docs/config.json"},
-        {"type": "file", "name": "readme.md", "path": "docs/readme.md"},
+        {"type": "file", "name": "login.md", "path": "docs/api/login.md"},
+        {"type": "file", "name": "config.json", "path": "docs/api/config.json"},
+        {"type": "file", "name": "readme.md", "path": "docs/api/readme.md"},
     ]
-
     mock_response = _make_response(contents)
     with patch("caracal_rag.sources.requests.get", return_value=mock_response):
-        files = list(_github_list_md_files("owner/repo", "docs", "master"))
-
-    assert sorted(files) == ["docs/login.md", "docs/readme.md"]
+        files = list(_github_list_md_files("owner/repo", "docs/api", "master"))
+    assert sorted(files) == ["docs/api/login.md", "docs/api/readme.md"]
 
 
 def test_github_list_md_files_nested_dirs():
-    """Sub-directories are traversed recursively."""
     root_contents = [
-        {"type": "file", "name": "top.md", "path": "docs/top.md"},
-        {"type": "dir", "name": "api", "path": "docs/api"},
-        {"type": "dir", "name": "guides", "path": "docs/guides"},
+        {"type": "file", "name": "top.md", "path": "docs/api/top.md"},
+        {"type": "dir", "name": "sub", "path": "docs/api/sub"},
     ]
-    api_contents = [
-        {"type": "file", "name": "auth.md", "path": "docs/api/auth.md"},
+    sub_contents = [
+        {"type": "file", "name": "auth.md", "path": "docs/api/sub/auth.md"},
     ]
-    guides_contents = [
-        {"type": "file", "name": "intro.md", "path": "docs/guides/intro.md"},
-    ]
-
-    responses = [
-        _make_response(root_contents),
-        _make_response(api_contents),
-        _make_response(guides_contents),
-    ]
-
-    with patch(
-        "caracal_rag.sources.requests.get",
-        side_effect=responses,
-    ):
-        files = list(_github_list_md_files("owner/repo", "docs", "master"))
-
-    assert sorted(files) == [
-        "docs/api/auth.md",
-        "docs/guides/intro.md",
-        "docs/top.md",
-    ]
+    responses = [_make_response(root_contents), _make_response(sub_contents)]
+    with patch("caracal_rag.sources.requests.get", side_effect=responses):
+        files = list(_github_list_md_files("owner/repo", "docs/api", "master"))
+    assert sorted(files) == ["docs/api/sub/auth.md", "docs/api/top.md"]
 
 
 def test_github_list_md_files_single_file_response():
-    """GitHub returns a single dict (not a list) when path is a single file."""
-    single = {"type": "file", "name": "only.md", "path": "docs/only.md"}
+    single = {"type": "file", "name": "only.md", "path": "docs/api/only.md"}
     mock_response = _make_response(single)
-
     with patch("caracal_rag.sources.requests.get", return_value=mock_response):
-        files = list(_github_list_md_files("owner/repo", "docs/only.md", "master"))
-
-    assert files == ["docs/only.md"]
+        files = list(_github_list_md_files("owner/repo", "docs/api/only.md", "master"))
+    assert files == ["docs/api/only.md"]
 
 
 def test_github_md_doc_dir_documents_fetches_content():
-    """Each discovered md file is fetched as raw content and yielded."""
     listing = [
         {"type": "file", "name": "login.md", "path": "docs/api/login.md"},
     ]
-
     listing_response = _make_response(listing)
-
     raw_response = MagicMock()
-    raw_response.text = "# Login\n\nDetails here."
+    raw_response.text = "# POST /fiteo/api/1/login\n\nLogs in."
     raw_response.raise_for_status.return_value = None
 
     with patch(
@@ -102,7 +80,7 @@ def test_github_md_doc_dir_documents_fetches_content():
             github_md_doc_dir_documents(
                 source_name="fiteo-docs",
                 repo="mariuszmarzec/fiteo",
-                path="docs",
+                path="docs/api",
                 branch="master",
             )
         )
@@ -115,25 +93,20 @@ def test_github_md_doc_dir_documents_fetches_content():
     assert doc.url == (
         "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/login.md"
     )
-    assert doc.content == "# Login\n\nDetails here."
-    assert doc.content_hash == Document.hash("# Login\n\nDetails here.")
+    assert doc.content == "# POST /fiteo/api/1/login\n\nLogs in."
+    assert doc.content_hash == Document.hash("# POST /fiteo/api/1/login\n\nLogs in.")
 
 
 def test_load_documents_from_source_github_md_doc_dir():
-    """Config with type github_md_doc_dir delegates to the github fetcher."""
     source = SourceConfig(
         name="fiteo",
         type="github_md_doc_dir",
         repo="mariuszmarzec/fiteo",
-        path="docs",
+        path="docs/api",
         branch="master",
     )
-
-    listing = [
-        {"type": "file", "name": "login.md", "path": "docs/api/login.md"},
-    ]
+    listing = [{"type": "file", "name": "login.md", "path": "docs/api/login.md"}]
     listing_response = _make_response(listing)
-
     raw_response = MagicMock()
     raw_response.text = "# Login"
     raw_response.raise_for_status.return_value = None
@@ -151,33 +124,25 @@ def test_load_documents_from_source_github_md_doc_dir():
 
 
 def test_load_documents_from_source_github_md_doc_dir_no_branch_defaults():
-    """When branch is None, defaults to 'master'."""
     source = SourceConfig(
         name="fiteo",
         type="github_md_doc_dir",
         repo="mariuszmarzec/fiteo",
-        path="docs",
+        path="docs/api",
         branch=None,
     )
-
     listing_response = _make_response([])
-    with patch(
-        "caracal_rag.sources.requests.get",
-        return_value=listing_response,
-    ):
+    with patch("caracal_rag.sources.requests.get", return_value=listing_response):
         docs = list(load_documents_from_source(source))
-
     assert docs == []
 
 
 def test_source_config_requires_repo_and_path():
-    """SourceConfig with repo but no path raises."""
     with pytest.raises(ValueError, match="must define repo and path"):
         SourceConfig(name="bad", type="github_md_doc_dir", repo="o/r", path=None)
 
 
 def test_source_config_requires_urls_or_url_or_repo():
-    """SourceConfig with nothing raises."""
     with pytest.raises(ValueError, match="must define urls, url, or repo\\+path"):
         SourceConfig(name="bad", type="markdown", urls=None, url=None)
 
@@ -188,8 +153,7 @@ def test_infer_type_github_paths():
     assert infer_type("docs/api/config.yaml") == "yaml"
 
 
-def test_load_documents_from_source_local(tmp_path):
-    """Config with type local loads .md files from a local directory."""
+def test_load_documents_from_source_local(tmp_path: Path):
     docs_dir = tmp_path / "knowledge"
     docs_dir.mkdir()
     (docs_dir / "joke1.md").write_text("# Joke 1\n\nWhy did the chicken...")
@@ -212,6 +176,17 @@ def test_load_documents_from_source_local(tmp_path):
 
 
 def test_local_source_requires_path():
-    """SourceConfig with type local but no path raises."""
     with pytest.raises(ValueError, match="must define path"):
         SourceConfig(name="bad", type="local", path=None)
+
+
+def test_config_indexes_fiteo_api_path():
+    """The example config must explicitly point at docs/api on master."""
+    from caracal_rag.config import AppConfig
+
+    config = AppConfig.from_yaml("config/sources.example.yaml")
+    fiteo = next(s for s in config.sources if s.name == "fiteo-docs")
+    assert fiteo.type == "github_md_doc_dir"
+    assert fiteo.repo == "mariuszmarzec/fiteo"
+    assert fiteo.path == "docs/api"
+    assert fiteo.branch == "master"

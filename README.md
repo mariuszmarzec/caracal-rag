@@ -16,9 +16,10 @@ tests/                    pytest test suite
 
 ## Commands
 
-- `python -m caracal_rag check`
-- `python -m caracal_rag index`
-- `python -m caracal_rag index --source fiteo-docs`
+- `caracal-rag check`
+- `caracal-rag index`
+- `caracal-rag index --source fiteo-docs`
+- `caracal-rag mcp`
 
 ## Configuration
 
@@ -31,6 +32,17 @@ Three source types are supported in the `sources` list:
 * `markdown` – index individual markdown files by their raw URLs.
 * `github_md_doc_dir` – recursively fetches all `.md` files from a GitHub repository directory. This is useful when an entire docs folder should be indexed without listing each file individually.
 * `local` – index all `.md` files from a local directory recursively.
+
+The Fiteo API documentation source is configured explicitly to index
+`mariuszmarzec/fiteo/docs/api` from the `master` branch:
+
+```yaml
+- name: fiteo-docs
+  type: github_md_doc_dir
+  repo: mariuszmarzec/fiteo
+  path: docs/api
+  branch: master
+```
 
 ## Running the Embedding Pipeline
 
@@ -46,8 +58,7 @@ The embedding model and endpoint are configured in `config/sources.example.yaml`
 
 ```yaml
 embedding:
-  model: text-embedding-3-small
-  api_base: http://localhost:4000
+  api_base: http://localhost:3001/v1/embeddings
 ```
 
 The `api_base` points to a LiteLLM proxy that exposes an OpenAI-compatible `/v1/embeddings` endpoint. The model name is passed through to LiteLLM, which routes it to the underlying provider.
@@ -64,7 +75,17 @@ This validates the configuration and connectivity to LiteLLM and Chroma without 
 
 ## Running the RAG Server (MCP)
 
-The MCP server exposes `search_api(query)` to any MCP-compatible agent. It queries the remote Chroma database and returns the most relevant chunks with source metadata.
+The MCP server exposes two tools to any MCP-compatible agent. Both query the
+remote Chroma database and never crawl GitHub during a request:
+
+* `search_api(query, top_k=5)` – semantic search over indexed documentation chunks.
+* `find_endpoint(path, method=None)` – exact/normalised lookup of an HTTP endpoint
+  path against the indexed API documentation.
+
+`find_endpoint` accepts a bare path (`/fiteo/api/1/tasks`) or a method-prefixed
+pair (`POST /fiteo/api/1/login`). Method prefix, trailing slashes and repeated
+slashes are normalised away. When no indexed chunk declares the requested path,
+the tool reports a clear no-match result instead of inventing an endpoint.
 
 ### Starting the MCP Server
 
@@ -114,26 +135,62 @@ OpenClaw will register the `search_api` tool and make it available to the agent 
 
 ### Manual MCP Test
 
-You can test the MCP server directly using any MCP client. The server exposes a single tool:
+You can test the MCP server directly using any MCP client. The server exposes two tools:
 
 ```
-search_api(query) -> list of relevant chunks with source metadata
+search_api(query, top_k=5) -> list of relevant chunks with source metadata
+find_endpoint(path, method=None) -> matching chunks for an exact endpoint path
 ```
 
-Example result:
+Example `search_api` result:
 
 ```
-Source: example_knowledge_funny_jokes
-Document: magic-words.md
-URL: /absolute/path/to/magic-words.md
+Source: fiteo-docs
+Document: login.md
+URL: https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/login.md
 Content: ...
+```
+
+Example `find_endpoint` result:
+
+```
+Endpoint: POST /fiteo/api/1/login
+Matches: 1
+---
+Source: fiteo-docs
+Document: login.md
+URL: https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/login.md
+Content: ...
+```
+
+A missing endpoint returns:
+
+```
+Endpoint: ANY /fiteo/api/1/does-not-exist
+No match: no indexed API documentation declares this endpoint path.
 ```
 
 ## Full Workflow
 
 1. Configure LiteLLM and Chroma in `config/sources.example.yaml`.
 2. Set required environment variables for secrets.
-3. Run the indexing pipeline: `python -m caracal_rag index`.
-4. Start the MCP server: `python -m caracal_rag mcp`.
+3. Run the indexing pipeline: `caracal-rag index`.
+4. Start the MCP server: `caracal-rag mcp`.
 5. Connect an MCP-compatible agent (OpenCode or OpenClaw).
 6. Ask the agent questions about the indexed documentation.
+
+## Indexing Consistency
+
+Re-running the index keeps the vector database consistent:
+
+* **Unchanged documents** are skipped — every chunk is compared against the
+  existing collection by chunk id and content hash, so unchanged docs are not
+  re-embedded and no duplicate vectors are created.
+* **Changed documents** are refreshed: stale chunks for the document url are
+  deleted and the new chunks are upserted.
+* **Deleted documents** are removed: any chunk whose document url is no longer
+  present in the source is deleted from the collection.
+
+Chunk ids are deterministic (`uuid5` of `<document-url>-<chunk-index>`), so
+re-upserting the same chunk overwrites the previous vector instead of appending
+a duplicate.

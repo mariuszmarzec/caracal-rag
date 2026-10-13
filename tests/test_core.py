@@ -116,7 +116,10 @@ def test_indexing_idempotency(monkeypatch: pytest.MonkeyPatch) -> None:
         def add(self, **kwargs) -> None:
             self.added += 1
 
-        def get(self, where: dict) -> dict:
+        def upsert(self, **kwargs) -> None:
+            self.added += 1
+
+        def get(self, where: dict | None = None, include: list[str] | None = None) -> dict:
             return {"ids": ["url1-chunk0"]}
 
         def delete(self, ids: list[str]) -> None:

@@ -25,13 +25,27 @@ def ensure_collection(client: HttpClient, name: str) -> any:
     return client.get_or_create_collection(name=name)
 
 
+def _chunk_id(chunk: Chunk) -> str:
+    """Deterministic chunk id derived from the document url and chunk index.
+
+    Using a stable id makes repeated indexing idempotent: re-upserting the same
+    chunk overwrites the previous vector instead of duplicating it.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{chunk.url}-{chunk.chunk_index}"))
+
+
 def upsert_chunks(collection, chunks: Iterable[Chunk], embeddings: list[list[float]]) -> None:
+    """Insert or update chunk vectors.
+
+    Chunks are keyed by a deterministic id (document url + chunk index), so
+    re-running the index on unchanged documents overwrites existing vectors
+    instead of appending duplicates.
+    """
     ids: list[str] = []
     documents: list[str] = []
     metadatas: list[dict] = []
     for idx, chunk in enumerate(chunks):
-        chunk_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{chunk.url}-{chunk.chunk_index}"))
-        ids.append(chunk_id)
+        ids.append(_chunk_id(chunk))
         documents.append(chunk.text)
         metadatas.append(
             {
@@ -43,7 +57,9 @@ def upsert_chunks(collection, chunks: Iterable[Chunk], embeddings: list[list[flo
                 "chunk_index": chunk.chunk_index,
             }
         )
-    collection.add(
+    if not ids:
+        return
+    collection.upsert(
         ids=ids,
         documents=documents,
         embeddings=embeddings,
@@ -52,10 +68,43 @@ def upsert_chunks(collection, chunks: Iterable[Chunk], embeddings: list[list[flo
 
 
 def delete_document_chunks(collection, document_url: str) -> None:
+    """Delete all chunks belonging to a document url."""
     results = collection.get(where={"url": document_url})
     ids = results.get("ids") or []
     if ids:
         collection.delete(ids=ids)
+
+
+def delete_missing_documents(collection, current_urls: Iterable[str]) -> list[str]:
+    """Remove chunks whose document url is no longer present in the source.
+
+    Returns the list of removed document urls. This keeps the index consistent
+    when source documents are deleted between indexing runs.
+    """
+    current = set(current_urls)
+    existing = collection.get(include=[])
+    ids = existing.get("ids") or []
+    metadatas = existing.get("metadatas") or []
+
+    stale_urls: set[str] = set()
+    stale_ids: list[str] = []
+    for chunk_id, metadata in zip(ids, metadatas):
+        url = (metadata or {}).get("url")
+        if url and url not in current:
+            stale_urls.add(url)
+            stale_ids.append(chunk_id)
+
+    if stale_ids:
+        collection.delete(ids=stale_ids)
+    return sorted(stale_urls)
+
+
+def get_existing_chunks(collection) -> dict[str, dict]:
+    """Return a mapping of chunk id -> metadata for every chunk in the collection."""
+    existing = collection.get(include=["metadatas"])
+    ids = existing.get("ids") or []
+    metadatas = existing.get("metadatas") or []
+    return {chunk_id: metadata or {} for chunk_id, metadata in zip(ids, metadatas)}
 
 
 def search_chunks(collection, query_embedding: list[float], top_k: int = 5):

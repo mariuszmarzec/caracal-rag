@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from typing import Iterable
 
-from caracal_rag.chunking import chunk_document
+from caracal_rag.chunking import Chunk, chunk_document
 from caracal_rag.config import AppConfig
 from caracal_rag.embeddings import embed_texts
 from caracal_rag.sources import Document, load_documents_from_config
 from caracal_rag.vectorstore import (
     _chroma_client,
     delete_document_chunks,
+    delete_missing_documents,
     ensure_collection,
+    get_existing_chunks,
     upsert_chunks,
 )
 
@@ -33,10 +35,23 @@ class Indexer:
 
     def run(self) -> None:
         documents = list(self._load_documents())
+        current_urls = {doc.url for doc in documents}
+
+        # Remove chunks for documents that no longer exist in the source.
+        stale = delete_missing_documents(self.collection, current_urls)
+        if stale:
+            print(f"Removed stale chunks for {len(stale)} deleted document(s)")
+
         for document in documents:
             self._index_document(document)
 
     def _index_document(self, document: Document) -> None:
+        # Skip unchanged documents: if every chunk already exists with the same
+        # content hash, there is nothing to embed or upsert.
+        existing = get_existing_chunks(self.collection)
+        if self._is_unchanged(document, existing):
+            return
+
         delete_document_chunks(self.collection, document.url)
         chunks = list(chunk_document(document))
         if not chunks:
@@ -48,3 +63,24 @@ class Indexer:
             api_key=self.config.embedding.api_key,
         )
         upsert_chunks(self.collection, chunks, embeddings)
+
+    @staticmethod
+    def _is_unchanged(document: Document, existing: dict[str, dict]) -> bool:
+        """Return True when every chunk for this document already exists and matches."""
+        for chunk in chunk_document(document):
+            chunk_id = _chunk_id_for(chunk)
+            metadata = existing.get(chunk_id)
+            if metadata is None:
+                return False
+            if metadata.get("content_hash") != document.content_hash:
+                return False
+            if metadata.get("url") != chunk.url or metadata.get("chunk_index") != chunk.chunk_index:
+                return False
+        return True
+
+
+def _chunk_id_for(chunk: Chunk) -> str:
+    # Local import to avoid a circular dependency at module import time.
+    from caracal_rag.vectorstore import _chunk_id
+
+    return _chunk_id(chunk)
