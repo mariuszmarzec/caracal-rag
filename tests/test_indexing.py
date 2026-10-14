@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from caracal_rag.config import AppConfig, SourceConfig
-from caracal_rag.sources import Document
+from caracal_rag.sources import Document, SourceLoadError
 
 
 class FakeCollection:
@@ -317,3 +317,55 @@ def test_indexer_passes_configured_embedding_model(monkeypatch: pytest.MonkeyPat
 
     Indexer(config=config).run()
     assert captured.get("model") == config.embedding.model
+
+
+def test_transient_fetch_failure_preserves_existing_vectors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """Regression: a transient fetch failure must not be treated as deletion.
+
+    When source loading partially fails, the indexer must still index the
+    documents that were fetched while skipping destructive reconciliation, so
+    the existing vectors for the failed document are preserved.
+    """
+    from caracal_rag.indexing import Indexer
+
+    doc = Document(
+        source="api",
+        name="login.md",
+        url="https://example.com/login.md",
+        type="markdown",
+        content="# Login\n\nDetails here.",
+        content_hash=Document.hash("# Login\n\nDetails here."),
+    )
+    captured: dict[str, Any] = {}
+    _patch_embed(monkeypatch, captured)
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+
+    # First run: document is fetched and indexed successfully.
+    _patch_documents(monkeypatch, [doc])
+    Indexer(config=_make_config()).run()
+    assert _stored_urls(collection) == {doc.url}
+
+    # Second run: loading fails partway through after this document was
+    # fetched. The failure carries the already-loaded documents.
+    captured.clear()
+
+    def _failing_load(path):
+        yield doc
+        raise SourceLoadError(
+            "Failed to fetch https://example.com/login.md: connection reset",
+            [doc],
+        )
+
+    monkeypatch.setattr(
+        "caracal_rag.indexing.load_documents_from_config", _failing_load
+    )
+
+    # The failure must not delete the existing vectors.
+    Indexer(config=_make_config()).run()
+    assert _stored_urls(collection) == {doc.url}
+    # No re-embedding happened: the document was unchanged.
+    assert "texts" not in captured
+    assert "skipping deletion reconciliation" in capsys.readouterr().out

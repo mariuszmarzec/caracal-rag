@@ -14,6 +14,7 @@ import pytest
 from caracal_rag.config import SourceConfig
 from caracal_rag.sources import (
     Document,
+    SourceLoadError,
     _github_list_md_files,
     github_md_doc_dir_documents,
     infer_type,
@@ -190,3 +191,63 @@ def test_config_indexes_fiteo_api_path():
     assert fiteo.repo == "mariuszmarzec/fiteo"
     assert fiteo.path == "docs/api"
     assert fiteo.branch == "master"
+
+
+def test_github_md_doc_dir_documents_raises_on_fetch_failure():
+    """A transient fetch failure raises SourceLoadError carrying loaded docs."""
+    listing = [
+        {"type": "file", "name": "ok.md", "path": "docs/api/ok.md"},
+        {"type": "file", "name": "bad.md", "path": "docs/api/bad.md"},
+    ]
+    listing_response = _make_response(listing)
+    ok_response = MagicMock()
+    ok_response.text = "# OK"
+    ok_response.raise_for_status.return_value = None
+    bad_response = MagicMock()
+    bad_response.raise_for_status.side_effect = Exception("connection reset")
+
+    with patch(
+        "caracal_rag.sources.requests.get",
+        side_effect=[listing_response, ok_response, bad_response],
+    ):
+        with pytest.raises(SourceLoadError) as exc_info:
+            list(
+                github_md_doc_dir_documents(
+                    source_name="fiteo-docs",
+                    repo="mariuszmarzec/fiteo",
+                    path="docs/api",
+                    branch="master",
+                )
+            )
+
+    assert len(exc_info.value.documents) == 1
+    assert exc_info.value.documents[0].url == (
+        "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/ok.md"
+    )
+
+
+def test_load_documents_from_source_raises_on_fetch_failure():
+    """URL-based sources raise SourceLoadError carrying already-loaded docs."""
+    source = SourceConfig(
+        name="api",
+        type="markdown",
+        urls=[
+            "https://example.com/ok.md",
+            "https://example.com/bad.md",
+        ],
+    )
+    ok_response = MagicMock()
+    ok_response.text = "# OK"
+    ok_response.raise_for_status.return_value = None
+    bad_response = MagicMock()
+    bad_response.raise_for_status.side_effect = Exception("timeout")
+
+    with patch(
+        "caracal_rag.sources.requests.get",
+        side_effect=[ok_response, bad_response],
+    ):
+        with pytest.raises(SourceLoadError) as exc_info:
+            list(load_documents_from_source(source))
+
+    assert len(exc_info.value.documents) == 1
+    assert exc_info.value.documents[0].url == "https://example.com/ok.md"

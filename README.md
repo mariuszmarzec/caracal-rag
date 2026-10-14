@@ -166,6 +166,10 @@ Re-running the index keeps the vector database consistent:
   deleted and the new chunks are upserted.
 * **Deleted documents** are removed: any chunk whose document url is no longer
   present in the source is deleted from the collection.
+* **Transient fetch failures** are not treated as deletions. If source loading
+  fails partway through (a network glitch, rate limit, etc.), the documents
+  that were already fetched are still indexed and destructive reconciliation
+  is skipped, so existing vectors are preserved.
 
 Chunk ids are deterministic (`uuid5` of `<document-url>-<chunk-index>`), so
 re-upserting the same chunk overwrites the previous vector instead of appending

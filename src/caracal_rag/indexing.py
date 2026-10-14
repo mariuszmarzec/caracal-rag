@@ -5,7 +5,11 @@ from typing import Iterable
 from caracal_rag.chunking import Chunk, chunk_document
 from caracal_rag.config import AppConfig
 from caracal_rag.embeddings import embed_texts
-from caracal_rag.sources import Document, load_documents_from_config
+from caracal_rag.sources import (
+    Document,
+    SourceLoadError,
+    load_documents_from_config,
+)
 from caracal_rag.vectorstore import (
     _chroma_client,
     delete_document_chunks,
@@ -34,17 +38,33 @@ class Indexer:
             yield doc
 
     def run(self) -> None:
-        documents = list(self._load_documents())
-        current_urls = {doc.url for doc in documents}
+        try:
+            documents = list(self._load_documents())
+        except SourceLoadError as exc:
+            # Source loading partially failed: some documents were fetched but
+            # one failed transiently. Index what we have and skip destructive
+            # reconciliation entirely, so a transient fetch failure is never
+            # mistaken for document deletion.
+            documents = exc.documents
+            if self.source_filter:
+                documents = [
+                    doc for doc in documents if doc.source == self.source_filter
+                ]
+            print(
+                "Source loading partially failed; skipping deletion reconciliation "
+                f"({len(documents)} document(s) loaded): {exc}"
+            )
+        else:
+            current_urls = {doc.url for doc in documents}
 
-        # Remove chunks for documents that no longer exist in the source.
-        # Reconciliation is scoped to the source being indexed so that running
-        # `index --source fiteo-docs` never deletes vectors from other sources.
-        stale = delete_missing_documents(
-            self.collection, current_urls, source=self.source_filter
-        )
-        if stale:
-            print(f"Removed stale chunks for {len(stale)} deleted document(s)")
+            # Remove chunks for documents that no longer exist in the source.
+            # Reconciliation is scoped to the source being indexed so that running
+            # `index --source fiteo-docs` never deletes vectors from other sources.
+            stale = delete_missing_documents(
+                self.collection, current_urls, source=self.source_filter
+            )
+            if stale:
+                print(f"Removed stale chunks for {len(stale)} deleted document(s)")
 
         for document in documents:
             self._index_document(document)
