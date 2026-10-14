@@ -1,4 +1,4 @@
-"""Tests for the MCP tools: search_api and find_endpoint.
+"""Tests for the MCP tools: search_api.
 
 External services (LiteLLM, Chroma) are replaced with in-memory fakes so the
 tests run without network access.
@@ -146,41 +146,7 @@ def test_search_api_formatting(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "Login details." in text
 
 
-def test_find_endpoint_match(monkeypatch: pytest.MonkeyPatch) -> None:
-    server = _make_server(monkeypatch)
-    results = server.find_endpoint(path="/fiteo/api/1/login")
-    assert len(results) == 1
-    assert results[0].document == "login.md"
-
-
-def test_find_endpoint_normalises_method_and_slashes(monkeypatch: pytest.MonkeyPatch) -> None:
-    server = _make_server(monkeypatch)
-    assert server.find_endpoint(path="POST /fiteo/api/1/login/") == server.find_endpoint(
-        path="/fiteo/api/1/login"
-    )
-
-
-def test_find_endpoint_no_match_reports_clearly(monkeypatch: pytest.MonkeyPatch) -> None:
-    server = _make_server(monkeypatch)
-    results = server.find_endpoint(path="/fiteo/api/1/does-not-exist")
-    assert results == []
-    text = server._format_endpoint(results, "/fiteo/api/1/does-not-exist", None)
-    assert "No match" in text
-
-
-def test_find_endpoint_empty_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    server = _make_server(monkeypatch)
-    assert server.find_endpoint(path="") == []
-
-
-def test_find_endpoint_respects_method_filter(monkeypatch: pytest.MonkeyPatch) -> None:
-    server = _make_server(monkeypatch)
-    # The fake collection returns a login.md chunk; filtering by GET must not match.
-    results = server.find_endpoint(path="/fiteo/api/1/login", method="GET")
-    assert results == []
-
-
-def test_list_tools_exposes_both_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_list_tools_exposes_only_search_api(monkeypatch: pytest.MonkeyPatch) -> None:
     import asyncio
 
     server = _make_server(monkeypatch)
@@ -190,5 +156,14 @@ def test_list_tools_exposes_both_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     assert handler is not None
     tools = asyncio.run(handler())
     names = [t.name for t in tools]
-    assert "search_api" in names
-    assert "find_endpoint" in names
+    assert names == ["search_api"]
+
+
+def test_call_tool_unknown_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    server = _make_server(monkeypatch)
+    handler = server.server.call_tool_handler
+    assert handler is not None
+    with pytest.raises(ValueError, match="Unknown tool"):
+        asyncio.run(handler("bogus", {}))

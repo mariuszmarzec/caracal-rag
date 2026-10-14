@@ -2,6 +2,10 @@
 
 External services (LiteLLM, GitHub, Chroma) are replaced with in-memory fakes so
 the tests run without network access.
+
+The :class:`FakeCollection` faithfully honours the Chroma ``include`` argument:
+when ``metadatas`` is not requested it is omitted from the result, mirroring the
+real Chroma behaviour that motivated the ``delete_missing_documents`` fix.
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ from caracal_rag.sources import Document
 
 
 class FakeCollection:
-    """Minimal in-memory Chroma collection."""
+    """Minimal in-memory Chroma collection that honours the ``include`` argument."""
 
     def __init__(self) -> None:
         self._store: dict[str, dict[str, Any]] = {}
@@ -25,21 +29,15 @@ class FakeCollection:
         where: dict[str, Any] | None = None,
         include: list[str] | None = None,
     ) -> dict[str, Any]:
-        if where is None:
-            return {
-                "ids": list(self._store.keys()),
-                "metadatas": [self._store[cid] for cid in self._store],
-            }
-        url = where.get("url")
-        matches = {
-            cid: meta
-            for cid, meta in self._store.items()
-            if meta.get("url") == url
-        }
-        return {
-            "ids": list(matches.keys()),
-            "metadatas": list(matches.values()),
-        }
+        items = list(self._store.items())
+        if where is not None:
+            url = where.get("url")
+            items = [(cid, meta) for cid, meta in items if meta.get("url") == url]
+
+        result: dict[str, Any] = {"ids": [cid for cid, _ in items]}
+        if include is not None and "metadatas" in include:
+            result["metadatas"] = [meta for _, meta in items]
+        return result
 
     def upsert(self, ids, documents, embeddings, metadatas) -> None:
         for cid, text, meta in zip(ids, documents, metadatas):
@@ -75,9 +73,10 @@ def _make_config() -> AppConfig:
 
 
 def _patch_embed(monkeypatch: pytest.MonkeyPatch, captured: dict[str, Any]) -> None:
-    def fake_embed(texts, api_base, api_key=None):
+    def fake_embed(texts, api_base, api_key=None, model=None):
         captured["texts"] = list(texts)
         captured["api_base"] = api_base
+        captured["model"] = model
         return [[0.1, 0.2] for _ in texts]
 
     monkeypatch.setattr("caracal_rag.indexing.embed_texts", fake_embed)
@@ -100,6 +99,10 @@ def _patch_client(monkeypatch: pytest.MonkeyPatch, collection: FakeCollection) -
         lambda *args, **kwargs: _FakeChroma(),
     )
     return collection
+
+
+def _stored_urls(collection: FakeCollection) -> set[str]:
+    return {meta.get("url") for meta in collection._store.values()}
 
 
 def test_repeated_index_on_unchanged_docs_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -197,7 +200,7 @@ def test_deleted_doc_removes_stale_chunks(monkeypatch: pytest.MonkeyPatch) -> No
     assert len(collection._store) == 0
 
 
-def test_indexer_skips_empty_documents(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_indexing_skips_empty_documents(monkeypatch: pytest.MonkeyPatch) -> None:
     from caracal_rag.indexing import Indexer
 
     captured: dict[str, Any] = {}
@@ -210,3 +213,107 @@ def test_indexer_skips_empty_documents(monkeypatch: pytest.MonkeyPatch) -> None:
     indexer.run()
     assert "texts" not in captured  # no documents -> no embeddings requested
     assert len(collection._store) == 0
+
+
+def test_indexing_one_source_does_not_delete_other_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: indexing a single source must not delete another source's vectors.
+
+    Running ``index --source fiteo-docs`` previously fed only that source's URLs
+    into a collection-wide ``delete_missing_documents``, which wiped out chunks
+    belonging to every other configured source.
+    """
+    from caracal_rag.indexing import Indexer
+
+    doc_a = Document(
+        source="source-a",
+        name="a.md",
+        url="https://example.com/a.md",
+        type="markdown",
+        content="# A\n\nSource A content.",
+        content_hash=Document.hash("# A\n\nSource A content."),
+    )
+    doc_b = Document(
+        source="source-b",
+        name="b.md",
+        url="https://example.com/b.md",
+        type="markdown",
+        content="# B\n\nSource B content.",
+        content_hash=Document.hash("# B\n\nSource B content."),
+    )
+
+    captured: dict[str, Any] = {}
+    _patch_embed(monkeypatch, captured)
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+
+    # First index source A.
+    _patch_documents(monkeypatch, [doc_a])
+    Indexer(config=_make_config(), source_filter="source-a").run()
+    assert _stored_urls(collection) == {doc_a.url}
+
+    # Now index source B. Source A's vectors must be preserved.
+    captured.clear()
+    _patch_documents(monkeypatch, [doc_b])
+    Indexer(config=_make_config(), source_filter="source-b").run()
+    assert _stored_urls(collection) == {doc_a.url, doc_b.url}
+
+
+def test_full_index_still_reconciles_all_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A full (unfiltered) run still removes genuinely stale chunks across sources."""
+    from caracal_rag.indexing import Indexer
+
+    doc_a = Document(
+        source="source-a",
+        name="a.md",
+        url="https://example.com/a.md",
+        type="markdown",
+        content="# A",
+        content_hash=Document.hash("# A"),
+    )
+    doc_b = Document(
+        source="source-b",
+        name="b.md",
+        url="https://example.com/b.md",
+        type="markdown",
+        content="# B",
+        content_hash=Document.hash("# B"),
+    )
+
+    captured: dict[str, Any] = {}
+    _patch_embed(monkeypatch, captured)
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+
+    _patch_documents(monkeypatch, [doc_a, doc_b])
+    Indexer(config=_make_config()).run()
+    assert _stored_urls(collection) == {doc_a.url, doc_b.url}
+
+    # Full run again but doc_b is gone from the source -> its chunks are removed,
+    # doc_a's chunks remain.
+    captured.clear()
+    _patch_documents(monkeypatch, [doc_a])
+    Indexer(config=_make_config()).run()
+    assert _stored_urls(collection) == {doc_a.url}
+
+
+def test_indexer_passes_configured_embedding_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The configured embedding model is forwarded to embed_texts."""
+    from caracal_rag.indexing import Indexer
+
+    doc = Document(
+        source="api",
+        name="login.md",
+        url="https://example.com/login.md",
+        type="markdown",
+        content="# Login\n\nDetails.",
+        content_hash=Document.hash("# Login\n\nDetails."),
+    )
+    config = _make_config()
+    captured: dict[str, Any] = {}
+    _patch_embed(monkeypatch, captured)
+    _patch_documents(monkeypatch, [doc])
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+
+    Indexer(config=config).run()
+    assert captured.get("model") == config.embedding.model

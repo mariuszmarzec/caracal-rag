@@ -69,20 +69,30 @@ def upsert_chunks(collection, chunks: Iterable[Chunk], embeddings: list[list[flo
 
 def delete_document_chunks(collection, document_url: str) -> None:
     """Delete all chunks belonging to a document url."""
-    results = collection.get(where={"url": document_url})
+    results = collection.get(where={"url": document_url}, include=["metadatas"])
     ids = results.get("ids") or []
     if ids:
         collection.delete(ids=ids)
 
 
-def delete_missing_documents(collection, current_urls: Iterable[str]) -> list[str]:
+def delete_missing_documents(
+    collection,
+    current_urls: Iterable[str],
+    source: str | None = None,
+) -> list[str]:
     """Remove chunks whose document url is no longer present in the source.
 
     Returns the list of removed document urls. This keeps the index consistent
     when source documents are deleted between indexing runs.
+
+    When ``source`` is provided, only chunks from that source are considered
+    for deletion, so indexing a single source never removes vectors from other
+    configured sources.
     """
     current = set(current_urls)
-    existing = collection.get(include=[])
+    # Request metadatas explicitly: Chroma does not return metadata unless it is
+    # asked for, so stale vectors would otherwise go undetected.
+    existing = collection.get(include=["metadatas"])
     ids = existing.get("ids") or []
     metadatas = existing.get("metadatas") or []
 
@@ -91,6 +101,8 @@ def delete_missing_documents(collection, current_urls: Iterable[str]) -> list[st
     for chunk_id, metadata in zip(ids, metadatas):
         url = (metadata or {}).get("url")
         if url and url not in current:
+            if source is not None and (metadata or {}).get("source") != source:
+                continue
             stale_urls.add(url)
             stale_ids.append(chunk_id)
 

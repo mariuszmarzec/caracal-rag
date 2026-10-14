@@ -14,11 +14,14 @@ def _get_embedding_client(api_base: str, api_key: str | None = None) -> None:
 
 
 def embed_texts(
-    texts: list[str], api_base: str, api_key: str | None = None
+    texts: list[str],
+    api_base: str,
+    api_key: str | None = None,
+    model: str = "text-embedding-3-small",
 ) -> list[list[float]]:
     _get_embedding_client(api_base=api_base, api_key=api_key)
     vectors: list[list[float]] = []
     for text in texts:
-        response = litellm.embedding(input=[text])
+        response = litellm.embedding(input=[text], model=model)
         vectors.append(response.data[0]["embedding"])
     return vectors

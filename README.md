@@ -75,17 +75,13 @@ This validates the configuration and connectivity to LiteLLM and Chroma without 
 
 ## Running the RAG Server (MCP)
 
-The MCP server exposes two tools to any MCP-compatible agent. Both query the
-remote Chroma database and never crawl GitHub during a request:
+The MCP server exposes one tool to any MCP-compatible agent. It queries the
+remote Chroma database and never crawls GitHub during a request:
 
 * `search_api(query, top_k=5)` – semantic search over indexed documentation chunks.
-* `find_endpoint(path, method=None)` – exact/normalised lookup of an HTTP endpoint
-  path against the indexed API documentation.
 
-`find_endpoint` accepts a bare path (`/fiteo/api/1/tasks`) or a method-prefixed
-pair (`POST /fiteo/api/1/login`). Method prefix, trailing slashes and repeated
-slashes are normalised away. When no indexed chunk declares the requested path,
-the tool reports a clear no-match result instead of inventing an endpoint.
+Caracal RAG retrieves knowledge; the connected agent reasons over it. The server
+does not expose domain-specific endpoint lookup tools.
 
 ### Starting the MCP Server
 
@@ -135,11 +131,10 @@ OpenClaw will register the `search_api` tool and make it available to the agent 
 
 ### Manual MCP Test
 
-You can test the MCP server directly using any MCP client. The server exposes two tools:
+You can test the MCP server directly using any MCP client. The server exposes one tool:
 
 ```
 search_api(query, top_k=5) -> list of relevant chunks with source metadata
-find_endpoint(path, method=None) -> matching chunks for an exact endpoint path
 ```
 
 Example `search_api` result:
@@ -149,25 +144,6 @@ Source: fiteo-docs
 Document: login.md
 URL: https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/login.md
 Content: ...
-```
-
-Example `find_endpoint` result:
-
-```
-Endpoint: POST /fiteo/api/1/login
-Matches: 1
----
-Source: fiteo-docs
-Document: login.md
-URL: https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/login.md
-Content: ...
-```
-
-A missing endpoint returns:
-
-```
-Endpoint: ANY /fiteo/api/1/does-not-exist
-No match: no indexed API documentation declares this endpoint path.
 ```
 
 ## Full Workflow

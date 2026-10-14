@@ -38,7 +38,11 @@ class Indexer:
         current_urls = {doc.url for doc in documents}
 
         # Remove chunks for documents that no longer exist in the source.
-        stale = delete_missing_documents(self.collection, current_urls)
+        # Reconciliation is scoped to the source being indexed so that running
+        # `index --source fiteo-docs` never deletes vectors from other sources.
+        stale = delete_missing_documents(
+            self.collection, current_urls, source=self.source_filter
+        )
         if stale:
             print(f"Removed stale chunks for {len(stale)} deleted document(s)")
 
@@ -61,6 +65,7 @@ class Indexer:
             texts,
             api_base=self.config.embedding.api_base,
             api_key=self.config.embedding.api_key,
+            model=self.config.embedding.model,
         )
         upsert_chunks(self.collection, chunks, embeddings)
 
