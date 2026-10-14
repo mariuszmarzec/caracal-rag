@@ -324,48 +324,60 @@ def test_transient_fetch_failure_preserves_existing_vectors(
 ) -> None:
     """Regression: a transient fetch failure must not be treated as deletion.
 
-    When source loading partially fails, the indexer must still index the
-    documents that were fetched while skipping destructive reconciliation, so
-    the existing vectors for the failed document are preserved.
+    Index two documents successfully, then on the next run load one document
+    successfully and fail to fetch the other. The failed document is never
+    yielded, so its URL is absent from ``current_urls``; the indexer must still
+    preserve its existing vectors and skip destructive reconciliation entirely.
     """
     from caracal_rag.indexing import Indexer
 
-    doc = Document(
+    doc_a = Document(
         source="api",
-        name="login.md",
-        url="https://example.com/login.md",
+        name="a.md",
+        url="https://example.com/a.md",
         type="markdown",
-        content="# Login\n\nDetails here.",
-        content_hash=Document.hash("# Login\n\nDetails here."),
+        content="# A\n\nDetails here.",
+        content_hash=Document.hash("# A\n\nDetails here."),
+    )
+    doc_b = Document(
+        source="api",
+        name="b.md",
+        url="https://example.com/b.md",
+        type="markdown",
+        content="# B\n\nDetails here.",
+        content_hash=Document.hash("# B\n\nDetails here."),
     )
     captured: dict[str, Any] = {}
     _patch_embed(monkeypatch, captured)
     collection = FakeCollection()
     _patch_client(monkeypatch, collection)
 
-    # First run: document is fetched and indexed successfully.
-    _patch_documents(monkeypatch, [doc])
+    # First run: both documents are fetched and indexed successfully.
+    _patch_documents(monkeypatch, [doc_a, doc_b])
     Indexer(config=_make_config()).run()
-    assert _stored_urls(collection) == {doc.url}
+    assert _stored_urls(collection) == {doc_a.url, doc_b.url}
 
-    # Second run: loading fails partway through after this document was
-    # fetched. The failure carries the already-loaded documents.
+    # Second run: doc_a loads successfully but fetching doc_b fails
+    # partway through. The failure carries only the already-loaded doc_a, so
+    # doc_b's URL is not in current_urls -- if reconciliation ran it would be
+    # treated as deleted.
     captured.clear()
 
     def _failing_load(path):
-        yield doc
+        yield doc_a
         raise SourceLoadError(
-            "Failed to fetch https://example.com/login.md: connection reset",
-            [doc],
+            "Failed to fetch https://example.com/b.md: connection reset",
+            [doc_a],
         )
 
     monkeypatch.setattr(
         "caracal_rag.indexing.load_documents_from_config", _failing_load
     )
 
-    # The failure must not delete the existing vectors.
     Indexer(config=_make_config()).run()
-    assert _stored_urls(collection) == {doc.url}
-    # No re-embedding happened: the document was unchanged.
+    # Both documents' vectors remain: the failed doc_b was not deleted.
+    assert _stored_urls(collection) == {doc_a.url, doc_b.url}
+    # No re-embedding happened: the successfully loaded doc_a was unchanged.
     assert "texts" not in captured
+    # Destructive reconciliation was skipped, not merely scoped to current_urls.
     assert "skipping deletion reconciliation" in capsys.readouterr().out
