@@ -12,6 +12,8 @@ from caracal_rag.sources import (
 )
 from caracal_rag.vectorstore import (
     _chroma_client,
+    _chunk_id,
+    assert_embedding_model_consistent,
     delete_document_chunks,
     delete_missing_documents,
     ensure_collection,
@@ -24,12 +26,18 @@ class Indexer:
     def __init__(self, config: AppConfig, source_filter: str | None = None) -> None:
         self.config = config
         self.source_filter = source_filter
+        self.embedding_model = config.embedding.model
         self.client = _chroma_client(
             host=config.chroma.host,
             port=config.chroma.port,
             ssl=config.chroma.ssl,
         )
         self.collection = ensure_collection(self.client, config.chroma.collection)
+        # Load the collection metadata once per run instead of once per document.
+        # Fetching it inside _index_document made the cost O(document_count x
+        # collection_size); the cache is refreshed after every upsert/delete so
+        # the next document still sees an up-to-date view.
+        self._existing_chunks = get_existing_chunks(self.collection)
 
     def _load_documents(self) -> Iterable[Document]:
         for doc in load_documents_from_config("config/sources.example.yaml"):
@@ -38,6 +46,10 @@ class Indexer:
             yield doc
 
     def run(self) -> None:
+        # Fail fast if the collection already holds vectors from a different
+        # embedding model. Mixing embedding spaces produces meaningless search
+        # results, so refuse to index rather than silently mixing them.
+        assert_embedding_model_consistent(self.collection, self.embedding_model)
         try:
             documents = list(self._load_documents())
         except SourceLoadError as exc:
@@ -71,31 +83,71 @@ class Indexer:
 
     def _index_document(self, document: Document) -> None:
         # Skip unchanged documents: if every chunk already exists with the same
-        # content hash, there is nothing to embed or upsert.
-        existing = get_existing_chunks(self.collection)
-        if self._is_unchanged(document, existing):
+        # content hash, there is nothing to embed or upsert. The lookup uses the
+        # in-memory chunk metadata loaded once per run (see __init__), so this is
+        # O(chunks in the collection) at construction, not once per document.
+        if self._is_unchanged(document, self._existing_chunks):
             return
 
-        delete_document_chunks(self.collection, document.url)
         chunks = list(chunk_document(document))
-        if not chunks:
-            return
         # A document whose content is whitespace-only still yields one empty
         # chunk via chunk_markdown; treat that as no content so stale chunks are
         # removed instead of an empty chunk being upserted.
-        if all(not chunk.text.strip() for chunk in chunks):
+        if not chunks or all(not chunk.text.strip() for chunk in chunks):
+            delete_document_chunks(self.collection, document.url)
+            self._drop_cached_chunks(document.url)
             return
+
+        # Generate the replacement embeddings BEFORE deleting the working vectors
+        # for the current document. If embedding generation fails (LiteLLM down,
+        # rate limit, bad model), the valid old version is preserved instead of
+        # being silently lost. Only after the embeddings succeed do we remove the
+        # old chunks and upsert the new ones.
         texts = [chunk.text for chunk in chunks]
         embeddings = embed_texts(
             texts,
             api_base=self.config.embedding.api_base,
             api_key=self.config.embedding.api_key,
-            model=self.config.embedding.model,
+            model=self.embedding_model,
         )
-        upsert_chunks(self.collection, chunks, embeddings)
 
-    @staticmethod
-    def _is_unchanged(document: Document, existing: dict[str, dict]) -> bool:
+        delete_document_chunks(self.collection, document.url)
+        upsert_chunks(
+            self.collection,
+            chunks,
+            embeddings,
+            embedding_model=self.embedding_model,
+        )
+        self._upsert_cached_chunks(chunks)
+
+    def _drop_cached_chunks(self, document_url: str) -> None:
+        """Remove the document's chunks from the in-memory metadata cache."""
+        self._existing_chunks = {
+            chunk_id: metadata
+            for chunk_id, metadata in self._existing_chunks.items()
+            if (metadata or {}).get("url") != document_url
+        }
+
+    def _upsert_cached_chunks(self, chunks: Iterable[Chunk]) -> None:
+        """Reflect an upsert in the in-memory metadata cache.
+
+        The metadata written to the collection is the same the indexer computed,
+        so it can be mirrored in memory without another collection read. This
+        keeps the per-document work bounded and the cache accurate for the
+        remaining documents in the run.
+        """
+        for chunk in chunks:
+            self._existing_chunks[_chunk_id(chunk)] = {
+                "source": chunk.source,
+                "document": chunk.document,
+                "url": chunk.url,
+                "type": chunk.type,
+                "content_hash": chunk.content_hash,
+                "chunk_index": chunk.chunk_index,
+                "embedding_model": self.embedding_model,
+            }
+
+    def _is_unchanged(self, document: Document, existing: dict[str, dict]) -> bool:
         """Return True when every chunk for this document already exists and matches.
 
         Compares the expected chunk-id set against the ids actually stored for
@@ -103,6 +155,10 @@ class Indexer:
         empty) is detected as a change and the document is refreshed. Checking
         only the new chunks would leave stale vectors behind when the chunk
         layout changes while the text stays the same.
+
+        The embedding model that produced the stored vectors is also compared:
+        if the configured model changed, the old vectors live in a different
+        embedding space and must never be treated as current.
         """
         expected_ids = {_chunk_id_for(chunk) for chunk in chunk_document(document)}
         stored_ids = {
@@ -121,11 +177,10 @@ class Indexer:
                 return False
             if metadata.get("url") != chunk.url or metadata.get("chunk_index") != chunk.chunk_index:
                 return False
+            if metadata.get("embedding_model") != self.embedding_model:
+                return False
         return True
 
 
 def _chunk_id_for(chunk: Chunk) -> str:
-    # Local import to avoid a circular dependency at module import time.
-    from caracal_rag.vectorstore import _chunk_id
-
     return _chunk_id(chunk)

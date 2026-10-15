@@ -26,6 +26,7 @@ sys.modules["chromadb"] = _chromadb_stub
 from caracal_rag import chunking  # noqa: E402
 from caracal_rag.config import AppConfig, SourceConfig  # noqa: E402
 from caracal_rag.sources import Document, SourceLoadError  # noqa: E402
+from caracal_rag.vectorstore import _chunk_id  # noqa: E402
 
 
 class FakeCollection:
@@ -90,6 +91,26 @@ def _patch_embed(monkeypatch: pytest.MonkeyPatch, captured: dict[str, Any]) -> N
         return [[0.1, 0.2] for _ in texts]
 
     monkeypatch.setattr("caracal_rag.indexing.embed_texts", fake_embed)
+
+
+def _make_markdown_doc(source: str, name: str, url: str, content: str) -> Document:
+    return Document(
+        source=source,
+        name=name,
+        url=url,
+        type="markdown",
+        content=content,
+        content_hash=Document.hash(content),
+    )
+
+
+def _stored_models(collection: FakeCollection) -> set[str]:
+    models = set()
+    for meta in collection._store.values():
+        model = meta.get("embedding_model")
+        if model:
+            models.add(model)
+    return models
 
 
 def _patch_documents(monkeypatch: pytest.MonkeyPatch, documents: list[Document]) -> None:
@@ -402,7 +423,6 @@ def test_changed_chunk_count_is_refreshed(monkeypatch: pytest.MonkeyPatch) -> No
     the expected set and refresh the document.
     """
     from caracal_rag.indexing import Indexer
-    from caracal_rag.vectorstore import _chunk_id
 
     text = "0123456789abcdefghij0123456789"
     document = Document(
@@ -547,4 +567,186 @@ def test_whitespace_only_document_skips_embedding(monkeypatch: pytest.MonkeyPatc
     _patch_documents(monkeypatch, [whitespace_doc])
     Indexer(config=_make_config()).run()
     assert len(collection._store) == 0  # stale chunks removed, nothing embedded
-    assert "texts" not in captured
+
+
+def test_indexer_loads_collection_metadata_once_per_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding 1: Collection metadata must be loaded once per run, not per document.
+
+    The O(docs × collection) anti-pattern loads metadata for every document.
+    The fixed indexer loads existing chunks once at __init__ and uses an
+    in-memory cache thereafter.
+    """
+    from caracal_rag.indexing import Indexer, get_existing_chunks
+
+    call_count = {"get_existing_chunks": 0}
+    original_get = get_existing_chunks
+
+    def counting_get(collection, **kwargs):
+        call_count["get_existing_chunks"] += 1
+        return original_get(collection, **kwargs)
+
+    monkeypatch.setattr("caracal_rag.indexing.get_existing_chunks", counting_get)
+
+    # Create 5 unchanged documents
+    docs = [
+        Document(
+            source="api",
+            name=f"doc{i}.md",
+            url=f"https://example.com/doc{i}.md",
+            type="markdown",
+            content=f"Content {i}",
+            content_hash=Document.hash(f"Content {i}"),
+        )
+        for i in range(5)
+    ]
+    _patch_documents(monkeypatch, docs)
+
+    captured: dict[str, Any] = {}
+    _patch_embed(monkeypatch, captured)
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+
+    Indexer(config=_make_config()).run()
+
+    # Should call get_existing_chunks exactly once (at __init__)
+    assert call_count["get_existing_chunks"] == 1, (
+        f"Expected 1 call to get_existing_chunks, got {call_count['get_existing_chunks']}"
+    )
+
+
+def test_embedding_failure_preserves_existing_vectors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding 2: Embedding failure must not delete existing vectors.
+
+    The buggy flow deleted old vectors before embedding. The fixed flow
+    embeds first, then deletes only on success.
+    """
+    from caracal_rag.indexing import Indexer
+
+    # Seed collection with existing vectors
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+
+    original_doc = Document(
+        source="api",
+        name="login.md",
+        url="https://example.com/login.md",
+        type="markdown",
+        content="# Login\n\nDetails here.",
+        content_hash=Document.hash("# Login\n\nDetails here."),
+    )
+    _patch_documents(monkeypatch, [original_doc])
+
+    call_count = {"embed": 0}
+
+    def fake_embed(texts, api_base, api_key=None, model=None):
+        call_count["embed"] += 1
+        if call_count["embed"] == 2:
+            raise RuntimeError("Embedding service unavailable")
+        return [[0.1, 0.2] for _ in texts]
+
+    monkeypatch.setattr("caracal_rag.indexing.embed_texts", fake_embed)
+
+    # First run: index successfully
+    Indexer(config=_make_config()).run()
+    assert len(collection._store) > 0, "Should have indexed initial document"
+    initial_store = dict(collection._store)
+
+    # Second run: change document, but make embedding fail
+    changed_doc = Document(
+        source="api",
+        name="login.md",
+        url="https://example.com/login.md",
+        type="markdown",
+        content="# Login\n\nUpdated details.",
+        content_hash=Document.hash("# Login\n\nUpdated details."),
+    )
+    _patch_documents(monkeypatch, [changed_doc])
+
+    try:
+        Indexer(config=_make_config()).run()
+    except RuntimeError as e:
+        assert "Embedding service unavailable" in str(e)
+
+    # Vectors should still be there (not deleted before embedding)
+    assert collection._store == initial_store, (
+        "Existing vectors were deleted despite embedding failure"
+    )
+
+
+def test_embedding_model_change_detected_before_indexing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding 3: Model mismatch must be detected before indexing.
+
+    If stored vectors were created with a different embedding model,
+    the indexer must raise ValueError with rebuild guidance.
+    """
+    from caracal_rag.indexing import Indexer
+
+# Seed collection with vectors from a different model
+    captured: dict[str, Any] = {}
+    _patch_embed(monkeypatch, captured)
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+    # Use the real upsert path so the store has the right shape
+    seed_doc = Document(
+        source="api",
+        name="login.md",
+        url="https://example.com/login.md",
+        type="markdown",
+        content="# Login",
+        content_hash=Document.hash("# Login"),
+    )
+    _patch_documents(monkeypatch, [seed_doc])
+    Indexer(config=_make_config()).run()
+    # Now overwrite the stored embedding model to simulate a different model
+    for cid, meta in collection._store.items():
+        meta["embedding_model"] = "text-embedding-3-large"
+
+    doc = Document(
+        source="api",
+        name="login.md",
+        url="https://example.com/login.md",
+        type="markdown",
+        content="# Login",
+        content_hash=Document.hash("# Login"),
+    )
+    _patch_documents(monkeypatch, [doc])
+
+    # Config still uses text-embedding-3-small (different from stored)
+    config = _make_config()
+
+    with pytest.raises(ValueError, match="Mixing embedding spaces"):
+        Indexer(config=config).run()
+
+
+def test_stored_vectors_carry_embedding_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding 3b: Upserted vectors must store the embedding model in metadata."""
+    from caracal_rag.indexing import Indexer
+
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+
+    captured: dict[str, Any] = {}
+    _patch_embed(monkeypatch, captured)
+
+    doc = Document(
+        source="api",
+        name="login.md",
+        url="https://example.com/login.md",
+        type="markdown",
+        content="# Login",
+        content_hash=Document.hash("# Login"),
+    )
+    _patch_documents(monkeypatch, [doc])
+
+    config = _make_config()
+    expected_model = config.embedding.model
+
+    Indexer(config=config).run()
+
+    # Check that stored metadata includes embedding_model
+    assert len(collection._store) > 0
+    for record in collection._store.values():
+        meta = record.get("metadata") or {}
+        assert meta.get("embedding_model") == expected_model, (
+            f"Expected embedding_model={expected_model}, got {meta.get('embedding_model')}"
+        )

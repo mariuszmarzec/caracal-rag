@@ -8,7 +8,12 @@ from mcp.types import TextContent, Tool
 
 from caracal_rag.config import AppConfig
 from caracal_rag.embeddings import embed_texts
-from caracal_rag.vectorstore import _chroma_client, ensure_collection, search_chunks
+from caracal_rag.vectorstore import (
+    _chroma_client,
+    assert_embedding_model_consistent,
+    ensure_collection,
+    search_chunks,
+)
 
 
 @dataclass
@@ -22,6 +27,7 @@ class SearchResult:
 class CaracalMcpServer:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
+        self.embedding_model = config.embedding.model
         self.client = _chroma_client(
             host=config.chroma.host,
             port=config.chroma.port,
@@ -64,11 +70,15 @@ class CaracalMcpServer:
             raise ValueError(f"Unknown tool: {name}")
 
     def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
+        # Never mix query vectors from the current model with stored vectors
+        # from a different embedding space -- the similarity scores would be
+        # meaningless. Fail with actionable rebuild guidance instead.
+        assert_embedding_model_consistent(self.collection, self.embedding_model)
         embedding = embed_texts(
             [query],
             api_base=self.config.embedding.api_base,
             api_key=self.config.embedding.api_key,
-            model=self.config.embedding.model,
+            model=self.embedding_model,
         )[0]
         response = search_chunks(self.collection, embedding, top_k=top_k)
         return self._parse_results(response)

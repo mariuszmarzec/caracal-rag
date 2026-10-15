@@ -94,6 +94,15 @@ class FakeCollection:
     def __init__(self) -> None:
         pass
 
+    def get(
+        self,
+        where: dict[str, Any] | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, Any]:
+        # Empty collection: no stored vectors, so the embedding-model consistency
+        # check passes and the query below is unaffected.
+        return {"ids": [], "metadatas": []}
+
     def query(self, query_embeddings, n_results: int = 5) -> dict[str, Any]:
         return {
             "documents": [["# POST /fiteo/api/1/login\n\nLogs in with email and password."]],
@@ -204,3 +213,37 @@ def test_parse_results_returns_all_top_k(monkeypatch: pytest.MonkeyPatch) -> Non
     assert results[1].url.endswith("docs/api/tasks.md")
     assert results[0].content.startswith("# POST /fiteo/api/1/login")
     assert results[1].content.startswith("# GET /fiteo/api/1/tasks")
+
+
+def test_search_raises_on_embedding_model_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding 3: search must refuse to query when stored vectors use a different model.
+
+    The consistency guard runs before any embedding/querying so a mismatched
+    index is surfaced with actionable rebuild guidance rather than producing
+    meaningless results.
+    """
+    class MismatchCollection:
+        def get(self, where=None, include=None):
+            return {
+                "ids": ["chunk-1"],
+                "metadatas": [{"embedding_model": "text-embedding-3-large"}],
+            }
+
+        def query(self, query_embeddings, n_results: int = 5):
+            return {"documents": [], "metadatas": [], "ids": [], "distances": []}
+
+    monkeypatch.setattr("caracal_rag.mcp.Server", FakeServer)
+
+    class _ChromaWithMismatch:
+        def get_or_create_collection(self, name: str) -> MismatchCollection:
+            return MismatchCollection()
+
+    monkeypatch.setattr(
+        "caracal_rag.mcp._chroma_client",
+        lambda *args, **kwargs: _ChromaWithMismatch(),
+    )
+    monkeypatch.setattr("caracal_rag.mcp.embed_texts", lambda texts, **kwargs: [[0.1, 0.2]])
+
+    server = CaracalMcpServer(AppConfig.from_yaml("config/sources.example.yaml"))
+    with pytest.raises(ValueError, match="Mixing embedding spaces"):
+        server.search(query="login", top_k=5)
