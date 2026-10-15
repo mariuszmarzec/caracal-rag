@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Iterable
 
 from caracal_rag.chunking import Chunk, chunk_document
@@ -110,31 +111,81 @@ class Indexer:
             model=self.embedding_model,
         )
 
-        # Replace the document's chunks safely against both embedding and Chroma
-        # upsert failures. The new chunks are written first; because chunk ids are
-        # deterministic (document url + chunk index), upserting overwrites any
-        # matching id in place. Only afterwards are the obsolete ids -- the old
-        # chunks that are no longer part of the new set -- deleted. If the upsert
-        # fails, the old working vectors remain untouched and the in-memory cache
-        # is not modified, so the next run still sees the previous version.
-        upsert_chunks(
-            self.collection,
-            chunks,
-            embeddings,
-            embedding_model=self.embedding_model,
-        )
-        self._upsert_cached_chunks(chunks)
+        final_ids = [_chunk_id_for(chunk) for chunk in chunks]
+        # Stage the replacement under temporary ids. Staging ids are random uuid4
+        # values that do not collide with any existing chunk id, so a partial
+        # Chroma upsert can never overwrite the old working vectors in place: the
+        # old document's deterministic ids are untouched until the staging write
+        # has fully succeeded. If the staging upsert fails, the old vectors and the
+        # in-memory cache are left exactly as they were.
+        staging_ids = [str(uuid.uuid4()) for _ in chunks]
+        try:
+            upsert_chunks(
+                self.collection,
+                chunks,
+                embeddings,
+                embedding_model=self.embedding_model,
+                ids=staging_ids,
+            )
+        except Exception as exc:
+            # Roll back the staged ids a partial failure may have written: they
+            # do not belong to any document and would otherwise linger in the
+            # collection. The old working vectors were never touched, so after
+            # the rollback the collection is exactly as it was before the run.
+            try:
+                self.collection.delete(ids=staging_ids)
+            except Exception:
+                pass  # best effort: a lingering staged id is detected as drift
+            raise exc
 
-        obsolete_ids = [
+        # The new content is safely in the collection. Remove only the old
+        # document chunks known to the in-memory cache -- NOT the staged copies,
+        # which share the document url and would otherwise be removed too -- so
+        # the new content survives even if the promotion step below fails.
+        old_ids = [
             chunk_id
             for chunk_id, metadata in self._existing_chunks.items()
             if (metadata or {}).get("url") == document.url
-            and chunk_id not in {_chunk_id_for(chunk) for chunk in chunks}
         ]
-        if obsolete_ids:
-            self.collection.delete(ids=obsolete_ids)
-            for chunk_id in obsolete_ids:
+        if old_ids:
+            self.collection.delete(ids=old_ids)
+            for chunk_id in old_ids:
                 self._existing_chunks.pop(chunk_id, None)
+
+        # Promote the staged chunks to their deterministic ids. These ids are now
+        # free (the old chunks were removed), so the write overwrites nothing. If
+        # it fails partway, some final ids may already hold the new content; the
+        # staged copies are still in the collection, so retrying the promotion is
+        # safe and idempotent -- it re-writes every final id with identical
+        # content.
+        try:
+            upsert_chunks(
+                self.collection,
+                chunks,
+                embeddings,
+                embedding_model=self.embedding_model,
+                ids=final_ids,
+            )
+        except Exception:
+            try:
+                upsert_chunks(
+                    self.collection,
+                    chunks,
+                    embeddings,
+                    embedding_model=self.embedding_model,
+                    ids=final_ids,
+                )
+            except Exception as rollback_exc:
+                raise RuntimeError(
+                    "Chroma upsert failed and the retry failed too. The document's "
+                    "old vectors were already removed but the replacement is still "
+                    "present under temporary staging ids; re-run indexing to "
+                    "reconcile the collection."
+                ) from rollback_exc
+
+        # Promotion succeeded: the temporary staging ids are now redundant.
+        self.collection.delete(ids=staging_ids)
+        self._upsert_cached_chunks(chunks)
 
     def _drop_cached_chunks(self, document_url: str) -> None:
         """Remove the document's chunks from the in-memory metadata cache."""

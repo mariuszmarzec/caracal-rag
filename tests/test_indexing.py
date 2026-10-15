@@ -478,6 +478,7 @@ def test_changed_chunk_count_is_refreshed(monkeypatch: pytest.MonkeyPatch) -> No
         "url": document.url,
         "content_hash": document.content_hash,
         "chunk_index": 99,
+        "embedding_model": _make_config().embedding.model,
     }
     assert len(collection._store) == 4
 
@@ -870,16 +871,135 @@ def test_stored_vectors_carry_embedding_model(monkeypatch: pytest.MonkeyPatch) -
         )
 
 
-def test_untagged_document_chunk_is_refreshed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Regression for discussion_r4282720190: per-document model mismatch must
-    force re-embedding even when content, chunk layout and chunk ids are unchanged.
+def test_mixed_collection_with_untagged_vectors_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A collection holding one tagged and one untagged vector must be refused.
 
-    The collection-level guard only refuses a *wholesale* model change or a
-    fully untagged (legacy) collection. When the collection overall is tagged
-    with the configured model but one document's stored chunks carry no
-    ``embedding_model`` (or a stale one), ``_is_unchanged`` must still detect
-    the drift and refresh that document -- otherwise old-space vectors would be
-    mixed with new query vectors silently.
+    ``collection_is_legacy`` previously accepted a non-empty collection as long
+    as at least one vector carried ``embedding_model``, so vectors from an
+    unknown embedding space could be mixed with query vectors from the
+    configured model during both indexing and search. The whole collection is
+    unsafe when any vector lacks model metadata, so the guard must raise.
+    """
+    from caracal_rag.indexing import Indexer
+    from caracal_rag.vectorstore import assert_embedding_model_consistent
+
+    class MixedCollection:
+        def get(self, where=None, include=None):
+            return {
+                "ids": ["chunk-tagged", "chunk-untagged"],
+                "metadatas": [
+                    {"embedding_model": "text-embedding-3-small"},
+                    {"url": "https://example.com/unknown.md"},
+                ],
+            }
+
+        def query(self, query_embeddings, n_results: int = 5):
+            return {"documents": [], "metadatas": [], "ids": [], "distances": []}
+
+    config = _make_config()
+    with pytest.raises(ValueError, match="no embedding_model metadata"):
+        assert_embedding_model_consistent(MixedCollection(), config.embedding.model)
+
+    # The indexer must refuse to run against a mixed collection too: the guard
+    # runs at the start of run(), before any source loading or indexing.
+    monkeypatch.setattr(
+        "caracal_rag.indexing._chroma_client",
+        lambda *args, **kwargs: type(
+            "_C", (), {"get_or_create_collection": lambda self, name: MixedCollection()}
+        )(),
+    )
+    _patch_documents(monkeypatch, [])
+    with pytest.raises(ValueError, match="no embedding_model metadata"):
+        Indexer(config=config).run()
+
+
+def test_partial_upsert_failure_preserves_existing_vectors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Chroma upsert that mutates existing ids before failing must not lose data.
+
+    The previous test only simulated an exception before any write. The fixed
+    indexer stages the replacement under temporary ids, so a partial failure can
+    never overwrite the old working vectors in place: the old deterministic ids
+    are untouched until the staging write has fully succeeded, and a partial
+    staging write is rolled back. This test makes the upsert write at least one
+    existing id and then raise, and asserts the old vectors remain intact.
+    """
+    from caracal_rag.indexing import Indexer
+
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+
+    original_doc = Document(
+        source="api",
+        name="login.md",
+        url="https://example.com/login.md",
+        type="markdown",
+        content="# Login\n\nDetails here.",
+        content_hash=Document.hash("# Login\n\nDetails here."),
+    )
+    _patch_documents(monkeypatch, [original_doc])
+    _patch_embed(monkeypatch, {})
+
+    Indexer(config=_make_config()).run()
+    assert len(collection._store) > 0
+    initial_store = dict(collection._store)
+
+    # Change the document and make the Chroma upsert fail *after* writing at
+    # least one existing id, so the failure is ambiguous/partial rather than a
+    # clean pre-write exception.
+    changed_doc = Document(
+        source="api",
+        name="login.md",
+        url="https://example.com/login.md",
+        type="markdown",
+        content="# Login\n\nUpdated details.",
+        content_hash=Document.hash("# Login\n\nUpdated details."),
+    )
+    _patch_documents(monkeypatch, [changed_doc])
+
+    written_existing: list[str] = []
+
+    def failing_upsert(self, ids, documents, embeddings, metadatas):
+        # Deterministic ids overwrite existing vectors in place before the
+        # failure, simulating a partial Chroma upsert.
+        for cid, text, meta in zip(ids, documents, metadatas):
+            if cid in self._store:
+                written_existing.append(cid)
+            self._store[cid] = {
+                "text": text,
+                "embedding": embeddings[0] if embeddings else None,
+                "metadata": meta,
+                **meta,
+            }
+        raise RuntimeError("Chroma upsert failed: connection reset")
+
+    monkeypatch.setattr(FakeCollection, "upsert", failing_upsert)
+
+    try:
+        Indexer(config=_make_config()).run()
+    except RuntimeError as exc:
+        assert "Chroma upsert failed" in str(exc)
+
+    # The old working vectors must be intact: nothing was deleted and the failed
+    # upsert wrote nothing that survives the rollback.
+    assert collection._store == initial_store, (
+        "Existing vectors were lost despite upsert failure"
+    )
+    assert written_existing == []  # the old deterministic ids were never touched
+
+
+def test_untagged_document_chunk_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression for discussion_r4282720190: a mixed collection is refused.
+
+    Previously a collection holding one tagged and one untagged vector was
+    accepted at the collection level, and ``_is_unchanged`` was expected to
+    detect the per-document drift and refresh that document. The safer
+    behaviour is to refuse the mixed state outright: any vector that lacks
+    ``embedding_model`` makes the whole collection unsafe, so the consistency
+    guard raises with rebuild guidance before indexing or searching.
     """
     from caracal_rag.indexing import Indexer
 
@@ -897,12 +1017,7 @@ def test_untagged_document_chunk_is_refreshed(monkeypatch: pytest.MonkeyPatch) -
     collection = FakeCollection()
     _patch_client(monkeypatch, collection)
 
-    # Index with the default model so the collection is tagged with it.
-    # Seed a second, unrelated document so the collection stays tagged with the
-    # current model even after we strip the model from doc's chunks below --
-    # otherwise the whole collection would look legacy and the collection-level
-    # guard would refuse the run, masking the per-document drift the test exists
-    # to exercise.
+    # Index two documents so the collection is tagged with the current model.
     other_doc = Document(
         source="api",
         name="other.md",
@@ -914,24 +1029,19 @@ def test_untagged_document_chunk_is_refreshed(monkeypatch: pytest.MonkeyPatch) -
     _patch_documents(monkeypatch, [doc, other_doc])
     Indexer(config=_make_config()).run()
     assert _stored_models(collection) == {current_model}
-    assert len(collection._store) > 0
 
-    # Simulate per-document drift: strip the model metadata from this
-    # document's stored chunks while leaving the collection overall tagged with
-    # the current model (the collection-level guard therefore still passes).
+    # Simulate per-document drift: strip the model metadata from one document's
+    # stored chunks while leaving the other tagged. The collection is now mixed.
     for record in collection._store.values():
         if record.get("url") == doc.url:
             record.pop("embedding_model", None)
             record.get("metadata", {}).pop("embedding_model", None)
     assert _stored_models(collection) == {current_model}
 
-    # Re-index the identical document: the untagged chunks must be detected as
-    # drift and the document re-embedded with the configured model.
+    # Re-indexing the identical document must refuse the mixed collection
+    # rather than silently mixing the untagged vectors with new query vectors.
     captured.clear()
     _patch_documents(monkeypatch, [doc])
-    Indexer(config=_make_config()).run()
-    assert captured.get("model") == current_model
-    assert _stored_models(collection) == {current_model}
-    for record in collection._store.values():
-        if record.get("url") == doc.url:
-            assert record.get("embedding_model") == current_model
+    with pytest.raises(ValueError, match="no embedding_model metadata"):
+        Indexer(config=_make_config()).run()
+    assert captured.get("model") != current_model or "texts" not in captured

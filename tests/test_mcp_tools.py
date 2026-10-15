@@ -247,3 +247,43 @@ def test_search_raises_on_embedding_model_mismatch(monkeypatch: pytest.MonkeyPat
     server = CaracalMcpServer(AppConfig.from_yaml("config/sources.example.yaml"))
     with pytest.raises(ValueError, match="Mixing embedding spaces"):
         server.search(query="login", top_k=5)
+
+
+def test_search_refuses_mixed_collection_with_untagged_vectors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Search must refuse a collection holding one tagged and one untagged vector.
+
+    A mixed collection has vectors from an unknown embedding space alongside
+    tagged ones; querying it would return untagged chunks mixed with query
+    vectors from the configured model. The consistency guard must raise with
+    rebuild guidance before any embedding or query is issued.
+    """
+    class MixedCollection:
+        def get(self, where=None, include=None):
+            return {
+                "ids": ["chunk-tagged", "chunk-untagged"],
+                "metadatas": [
+                    {"embedding_model": "text-embedding-3-small"},
+                    {"url": "https://example.com/unknown.md"},
+                ],
+            }
+
+        def query(self, query_embeddings, n_results: int = 5):
+            return {"documents": [], "metadatas": [], "ids": [], "distances": []}
+
+    monkeypatch.setattr("caracal_rag.mcp.Server", FakeServer)
+
+    class _ChromaWithMixed:
+        def get_or_create_collection(self, name: str) -> MixedCollection:
+            return MixedCollection()
+
+    monkeypatch.setattr(
+        "caracal_rag.mcp._chroma_client",
+        lambda *args, **kwargs: _ChromaWithMixed(),
+    )
+    monkeypatch.setattr("caracal_rag.mcp.embed_texts", lambda texts, **kwargs: [[0.1, 0.2]])
+
+    server = CaracalMcpServer(AppConfig.from_yaml("config/sources.example.yaml"))
+    with pytest.raises(ValueError, match="no embedding_model metadata"):
+        server.search(query="login", top_k=5)
