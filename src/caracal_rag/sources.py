@@ -95,7 +95,19 @@ def github_md_doc_dir_documents(
     """
     owner_repo = repo
     documents: list[Document] = []
-    for file_path in _github_list_md_files(owner_repo, path, branch):
+    # Materialize the file listing so a discovery failure (GitHub API down,
+    # auth failure, rate limit) is reported as a SourceLoadError carrying the
+    # documents already loaded. Without this, a raw exception aborts the run
+    # and the indexer skips destructive reconciliation -- but it also skips
+    # indexing anything from this source.
+    try:
+        files = list(_github_list_md_files(owner_repo, path, branch))
+    except Exception as exc:
+        raise SourceLoadError(
+            f"Failed to list markdown files in {owner_repo}/{path}: {exc}",
+            documents,
+        ) from exc
+    for file_path in files:
         url = (
             f"https://raw.githubusercontent.com/{owner_repo}/{branch}/{file_path}"
         )

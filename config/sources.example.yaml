@@ -1,5 +1,6 @@
 embedding:
-  api_base: http://localhost:3001/v1/embeddings
+  model: text-embedding-3-small
+  api_base: http://localhost:3001/v1
 
 chroma:
   host: localhost

@@ -226,6 +226,34 @@ def test_github_md_doc_dir_documents_raises_on_fetch_failure():
     )
 
 
+def test_github_md_doc_dir_documents_raises_on_discovery_failure():
+    """A GitHub listing failure raises SourceLoadError with no loaded docs.
+
+    Without this, a raw exception from the listing step aborts the run instead
+    of being reported as a partial source load that the indexer can skip while
+    preserving existing vectors.
+    """
+    listing_response = MagicMock()
+    listing_response.raise_for_status.side_effect = Exception("rate limit")
+
+    with patch(
+        "caracal_rag.sources.requests.get",
+        return_value=listing_response,
+    ):
+        with pytest.raises(SourceLoadError) as exc_info:
+            list(
+                github_md_doc_dir_documents(
+                    source_name="fiteo-docs",
+                    repo="mariuszmarzec/fiteo",
+                    path="docs/api",
+                    branch="master",
+                )
+            )
+
+    assert exc_info.value.documents == []
+    assert "Failed to list markdown files" in str(exc_info.value)
+
+
 def test_load_documents_from_source_raises_on_fetch_failure():
     """URL-based sources raise SourceLoadError carrying already-loaded docs."""
     source = SourceConfig(

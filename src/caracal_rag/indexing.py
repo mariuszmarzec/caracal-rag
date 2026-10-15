@@ -80,6 +80,11 @@ class Indexer:
         chunks = list(chunk_document(document))
         if not chunks:
             return
+        # A document whose content is whitespace-only still yields one empty
+        # chunk via chunk_markdown; treat that as no content so stale chunks are
+        # removed instead of an empty chunk being upserted.
+        if all(not chunk.text.strip() for chunk in chunks):
+            return
         texts = [chunk.text for chunk in chunks]
         embeddings = embed_texts(
             texts,
@@ -91,7 +96,22 @@ class Indexer:
 
     @staticmethod
     def _is_unchanged(document: Document, existing: dict[str, dict]) -> bool:
-        """Return True when every chunk for this document already exists and matches."""
+        """Return True when every chunk for this document already exists and matches.
+
+        Compares the expected chunk-id set against the ids actually stored for
+        this document, so a shrinking chunk count (or a document that became
+        empty) is detected as a change and the document is refreshed. Checking
+        only the new chunks would leave stale vectors behind when the chunk
+        layout changes while the text stays the same.
+        """
+        expected_ids = {_chunk_id_for(chunk) for chunk in chunk_document(document)}
+        stored_ids = {
+            cid
+            for cid, metadata in existing.items()
+            if (metadata or {}).get("url") == document.url
+        }
+        if stored_ids != expected_ids:
+            return False
         for chunk in chunk_document(document):
             chunk_id = _chunk_id_for(chunk)
             metadata = existing.get(chunk_id)

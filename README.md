@@ -58,10 +58,13 @@ The embedding model and endpoint are configured in `config/sources.example.yaml`
 
 ```yaml
 embedding:
-  api_base: http://localhost:3001/v1/embeddings
+  model: text-embedding-3-small
+  api_base: http://localhost:3001/v1
 ```
 
-The `api_base` points to a LiteLLM proxy that exposes an OpenAI-compatible `/v1/embeddings` endpoint. The model name is passed through to LiteLLM, which routes it to the underlying provider.
+The `api_base` points to a LiteLLM proxy base URL. LiteLLM routes embedding
+requests to the OpenAI-compatible `/v1/embeddings` endpoint, and the model name
+is passed through to LiteLLM, which routes it to the underlying provider.
 
 ### Verifying Embedding Configuration
 

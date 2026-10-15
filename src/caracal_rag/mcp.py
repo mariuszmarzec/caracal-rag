@@ -78,6 +78,15 @@ class CaracalMcpServer:
         results: list[SearchResult] = []
         documents = response.get("documents") or []
         metadatas = response.get("metadatas") or []
+
+        # Chroma nests the top-k results: documents=[[...top-k texts...]],
+        # metadatas=[[...top-k metadata...]]. Flatten the outer array so every
+        # result is returned instead of only the first nested item.
+        if documents and isinstance(documents[0], list):
+            documents = [item for sublist in documents for item in sublist]
+        if metadatas and isinstance(metadatas[0], list):
+            metadatas = [item for sublist in metadatas for item in sublist]
+
         for doc_text, metadata in zip(documents, metadatas):
             if isinstance(doc_text, list):
                 doc_text = doc_text[0] if doc_text else ""

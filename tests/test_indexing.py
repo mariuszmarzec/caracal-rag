@@ -10,12 +10,22 @@ real Chroma behaviour that motivated the ``delete_missing_documents`` fix.
 
 from __future__ import annotations
 
+import sys
+import types
 from typing import Any
 
 import pytest
 
-from caracal_rag.config import AppConfig, SourceConfig
-from caracal_rag.sources import Document, SourceLoadError
+# Stub chromadb so the tests run without a working Chroma server or a
+# compatible sqlite3 build; the real client is replaced by FakeCollection via
+# monkeypatch in each test.
+_chromadb_stub = types.ModuleType("chromadb")
+_chromadb_stub.HttpClient = object
+sys.modules["chromadb"] = _chromadb_stub
+
+from caracal_rag import chunking  # noqa: E402
+from caracal_rag.config import AppConfig, SourceConfig  # noqa: E402
+from caracal_rag.sources import Document, SourceLoadError  # noqa: E402
 
 
 class FakeCollection:
@@ -381,3 +391,160 @@ def test_transient_fetch_failure_preserves_existing_vectors(
     assert "texts" not in captured
     # Destructive reconciliation was skipped, not merely scoped to current_urls.
     assert "skipping deletion reconciliation" in capsys.readouterr().out
+
+
+def test_changed_chunk_count_is_refreshed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A document with stale extra chunks must have them removed.
+
+    Detecting change only by content hash (or by iterating the new chunks)
+    leaves stale vectors behind when the stored chunk-id set no longer matches
+    the expected set. The indexer must compare the stored chunk-id set against
+    the expected set and refresh the document.
+    """
+    from caracal_rag.indexing import Indexer
+    from caracal_rag.vectorstore import _chunk_id
+
+    text = "0123456789abcdefghij0123456789"
+    document = Document(
+        source="api",
+        name="login.md",
+        url="https://example.com/login.md",
+        type="markdown",
+        content=text,
+        content_hash=Document.hash(text),
+    )
+    captured: dict[str, Any] = {}
+    _patch_embed(monkeypatch, captured)
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+
+    # Patch chunk_document to yield 3 chunks for this document.
+    monkeypatch.setattr(
+        "caracal_rag.indexing.chunk_document",
+        lambda doc, max_chars=1800: [
+            chunking.Chunk(
+                source=doc.source,
+                document=doc.name,
+                url=doc.url,
+                type=doc.type,
+                content_hash=doc.content_hash,
+                chunk_index=i,
+                text=t,
+            )
+            for i, t in enumerate(
+                [doc.content[i : i + 10] for i in range(0, len(doc.content), 10)]
+            )
+        ],
+    )
+
+    _patch_documents(monkeypatch, [document])
+    Indexer(config=_make_config()).run()
+    assert len(collection._store) == 3  # 3 chunks stored initially
+
+    # Simulate a stale extra chunk that was left behind by a previous buggy
+    # indexing pass: same url/content_hash, but a chunk_index that no longer
+    # exists in the current chunk layout.
+    captured.clear()
+    stale_chunk = chunking.Chunk(
+        source=document.source,
+        document=document.name,
+        url=document.url,
+        type=document.type,
+        content_hash=document.content_hash,
+        chunk_index=99,
+        text="stale",
+    )
+    collection._store[_chunk_id(stale_chunk)] = {
+        "url": document.url,
+        "content_hash": document.content_hash,
+        "chunk_index": 99,
+    }
+    assert len(collection._store) == 4
+
+    # Re-index the identical document: the stale chunk must be removed.
+    Indexer(config=_make_config()).run()
+    assert captured["texts"] != []  # changed doc was re-embedded
+    assert len(collection._store) == 3
+    assert all(
+        meta.get("chunk_index") != 99 for meta in collection._store.values()
+    )
+
+
+def test_empty_document_removes_stale_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A document that becomes empty must have its stale chunks removed.
+
+    When ``chunk_document`` yields no chunks for a document that previously had
+    vectors, the indexer must delete the stale chunks and skip embedding --
+    not leave the old vectors in place.
+    """
+    from caracal_rag.indexing import Indexer
+
+    original = Document(
+        source="api",
+        name="login.md",
+        url="https://example.com/login.md",
+        type="markdown",
+        content="# Login\n\nDetails here.",
+        content_hash=Document.hash("# Login\n\nDetails here."),
+    )
+    captured: dict[str, Any] = {}
+    _patch_embed(monkeypatch, captured)
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+
+    _patch_documents(monkeypatch, [original])
+    Indexer(config=_make_config()).run()
+    assert len(collection._store) > 0
+
+    # Next run: the document yields no chunks at all (e.g. it became empty).
+    captured.clear()
+    monkeypatch.setattr(
+        "caracal_rag.indexing.chunk_document", lambda doc, **kwargs: []
+    )
+    _patch_documents(monkeypatch, [original])
+    Indexer(config=_make_config()).run()
+    assert len(collection._store) == 0  # stale chunks removed
+    assert "texts" not in captured  # nothing was embedded
+
+
+def test_whitespace_only_document_skips_embedding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A document whose content is whitespace-only must not upsert an empty chunk.
+
+    ``chunk_markdown`` returns ``[""]`` for empty/whitespace content, so the
+    indexer would otherwise upsert one empty chunk. Treat it as no content and
+    remove any stale chunks instead.
+    """
+    from caracal_rag.indexing import Indexer
+
+    original = Document(
+        source="api",
+        name="login.md",
+        url="https://example.com/login.md",
+        type="markdown",
+        content="# Login\n\nDetails here.",
+        content_hash=Document.hash("# Login\n\nDetails here."),
+    )
+    captured: dict[str, Any] = {}
+    _patch_embed(monkeypatch, captured)
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+
+    _patch_documents(monkeypatch, [original])
+    Indexer(config=_make_config()).run()
+    assert len(collection._store) > 0
+
+    # Next run: the document content is whitespace-only, so chunk_document
+    # yields a single empty chunk.
+    captured.clear()
+    whitespace_doc = Document(
+        source=original.source,
+        name=original.name,
+        url=original.url,
+        type=original.type,
+        content="   \n  \n",
+        content_hash=Document.hash("   \n  \n"),
+    )
+    _patch_documents(monkeypatch, [whitespace_doc])
+    Indexer(config=_make_config()).run()
+    assert len(collection._store) == 0  # stale chunks removed, nothing embedded
+    assert "texts" not in captured

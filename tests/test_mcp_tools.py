@@ -167,3 +167,40 @@ def test_call_tool_unknown_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     assert handler is not None
     with pytest.raises(ValueError, match="Unknown tool"):
         asyncio.run(handler("bogus", {}))
+
+
+def test_parse_results_returns_all_top_k(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_parse_results must flatten the nested Chroma response and return every
+    top-k chunk, not merely the first nested item.
+
+    Chroma nests results as documents=[[...top-k texts...]] and
+    metadatas=[[...top-k metadata...]]. A parser that iterates the outer arrays
+    and selects element [0] discards all but one result for top_k > 1.
+    """
+    response = {
+        "documents": [
+            ["# POST /fiteo/api/1/login\n\nLogs in.", "# GET /fiteo/api/1/tasks\n\nLists tasks."]
+        ],
+        "metadatas": [
+            [
+                {
+                    "source": "fiteo-docs",
+                    "document": "login.md",
+                    "url": "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/login.md",
+                },
+                {
+                    "source": "fiteo-docs",
+                    "document": "tasks.md",
+                    "url": "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/tasks.md",
+                },
+            ]
+        ],
+    }
+    results = CaracalMcpServer._parse_results(response)
+    assert len(results) == 2
+    assert results[0].document == "login.md"
+    assert results[0].url.endswith("docs/api/login.md")
+    assert results[1].document == "tasks.md"
+    assert results[1].url.endswith("docs/api/tasks.md")
+    assert results[0].content.startswith("# POST /fiteo/api/1/login")
+    assert results[1].content.startswith("# GET /fiteo/api/1/tasks")
