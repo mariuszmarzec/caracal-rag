@@ -868,3 +868,70 @@ def test_stored_vectors_carry_embedding_model(monkeypatch: pytest.MonkeyPatch) -
         assert meta.get("embedding_model") == expected_model, (
             f"Expected embedding_model={expected_model}, got {meta.get('embedding_model')}"
         )
+
+
+def test_untagged_document_chunk_is_refreshed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression for discussion_r4282720190: per-document model mismatch must
+    force re-embedding even when content, chunk layout and chunk ids are unchanged.
+
+    The collection-level guard only refuses a *wholesale* model change or a
+    fully untagged (legacy) collection. When the collection overall is tagged
+    with the configured model but one document's stored chunks carry no
+    ``embedding_model`` (or a stale one), ``_is_unchanged`` must still detect
+    the drift and refresh that document -- otherwise old-space vectors would be
+    mixed with new query vectors silently.
+    """
+    from caracal_rag.indexing import Indexer
+
+    current_model = _make_config().embedding.model
+    doc = Document(
+        source="api",
+        name="login.md",
+        url="https://example.com/login.md",
+        type="markdown",
+        content="# Login\n\nDetails here.",
+        content_hash=Document.hash("# Login\n\nDetails here."),
+    )
+    captured: dict[str, Any] = {}
+    _patch_embed(monkeypatch, captured)
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+
+    # Index with the default model so the collection is tagged with it.
+    # Seed a second, unrelated document so the collection stays tagged with the
+    # current model even after we strip the model from doc's chunks below --
+    # otherwise the whole collection would look legacy and the collection-level
+    # guard would refuse the run, masking the per-document drift the test exists
+    # to exercise.
+    other_doc = Document(
+        source="api",
+        name="other.md",
+        url="https://example.com/other.md",
+        type="markdown",
+        content="# Other\n\nUnrelated.",
+        content_hash=Document.hash("# Other\n\nUnrelated."),
+    )
+    _patch_documents(monkeypatch, [doc, other_doc])
+    Indexer(config=_make_config()).run()
+    assert _stored_models(collection) == {current_model}
+    assert len(collection._store) > 0
+
+    # Simulate per-document drift: strip the model metadata from this
+    # document's stored chunks while leaving the collection overall tagged with
+    # the current model (the collection-level guard therefore still passes).
+    for record in collection._store.values():
+        if record.get("url") == doc.url:
+            record.pop("embedding_model", None)
+            record.get("metadata", {}).pop("embedding_model", None)
+    assert _stored_models(collection) == {current_model}
+
+    # Re-index the identical document: the untagged chunks must be detected as
+    # drift and the document re-embedded with the configured model.
+    captured.clear()
+    _patch_documents(monkeypatch, [doc])
+    Indexer(config=_make_config()).run()
+    assert captured.get("model") == current_model
+    assert _stored_models(collection) == {current_model}
+    for record in collection._store.values():
+        if record.get("url") == doc.url:
+            assert record.get("embedding_model") == current_model
