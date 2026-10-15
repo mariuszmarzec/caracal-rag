@@ -139,7 +139,20 @@ def test_indexing_idempotency(monkeypatch: pytest.MonkeyPatch) -> None:
             self.added += 1
 
         def get(self, where: dict | None = None, include: list[str] | None = None) -> dict:
-            return {"ids": ["url1-chunk0"]}
+            # The collection is tracked: the stored chunk carries the configured
+            # embedding model, so the consistency guard passes and the idempotency
+            # check can compare against it.
+            return {
+                "ids": ["url1-chunk0"],
+                "metadatas": [
+                    {
+                        "url": "https://example.com/login.md",
+                        "embedding_model": "text-embedding-3-small",
+                        "content_hash": Document.hash("# Login"),
+                        "chunk_index": 0,
+                    }
+                ],
+            }
 
         def delete(self, ids: list[str]) -> None:
             self.deleted.extend(ids)

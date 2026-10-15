@@ -98,11 +98,10 @@ class Indexer:
             self._drop_cached_chunks(document.url)
             return
 
-        # Generate the replacement embeddings BEFORE deleting the working vectors
+        # Generate the replacement embeddings BEFORE touching the working vectors
         # for the current document. If embedding generation fails (LiteLLM down,
         # rate limit, bad model), the valid old version is preserved instead of
-        # being silently lost. Only after the embeddings succeed do we remove the
-        # old chunks and upsert the new ones.
+        # being silently lost.
         texts = [chunk.text for chunk in chunks]
         embeddings = embed_texts(
             texts,
@@ -111,7 +110,13 @@ class Indexer:
             model=self.embedding_model,
         )
 
-        delete_document_chunks(self.collection, document.url)
+        # Replace the document's chunks safely against both embedding and Chroma
+        # upsert failures. The new chunks are written first; because chunk ids are
+        # deterministic (document url + chunk index), upserting overwrites any
+        # matching id in place. Only afterwards are the obsolete ids -- the old
+        # chunks that are no longer part of the new set -- deleted. If the upsert
+        # fails, the old working vectors remain untouched and the in-memory cache
+        # is not modified, so the next run still sees the previous version.
         upsert_chunks(
             self.collection,
             chunks,
@@ -119,6 +124,17 @@ class Indexer:
             embedding_model=self.embedding_model,
         )
         self._upsert_cached_chunks(chunks)
+
+        obsolete_ids = [
+            chunk_id
+            for chunk_id, metadata in self._existing_chunks.items()
+            if (metadata or {}).get("url") == document.url
+            and chunk_id not in {_chunk_id_for(chunk) for chunk in chunks}
+        ]
+        if obsolete_ids:
+            self.collection.delete(ids=obsolete_ids)
+            for chunk_id in obsolete_ids:
+                self._existing_chunks.pop(chunk_id, None)
 
     def _drop_cached_chunks(self, document_url: str) -> None:
         """Remove the document's chunks from the in-memory metadata cache."""

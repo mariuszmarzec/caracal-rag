@@ -673,6 +673,124 @@ def test_embedding_failure_preserves_existing_vectors(monkeypatch: pytest.Monkey
     )
 
 
+def test_upsert_failure_preserves_existing_vectors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replacement must be safe against Chroma upsert failure too.
+
+    The old chunks are no longer deleted before the new ones are written: the
+    new chunks are upserted first (deterministic ids overwrite matching chunks in
+    place) and only the obsolete ids are deleted afterwards. If the upsert itself
+    fails, the working vectors must remain untouched and the in-memory cache
+    must not have been modified, so the next run still sees the previous version.
+    """
+    from caracal_rag.indexing import Indexer
+
+    # Seed collection with existing vectors
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+
+    original_doc = Document(
+        source="api",
+        name="login.md",
+        url="https://example.com/login.md",
+        type="markdown",
+        content="# Login\n\nDetails here.",
+        content_hash=Document.hash("# Login\n\nDetails here."),
+    )
+    _patch_documents(monkeypatch, [original_doc])
+    _patch_embed(monkeypatch, {})
+
+    Indexer(config=_make_config()).run()
+    assert len(collection._store) > 0, "Should have indexed initial document"
+    initial_store = dict(collection._store)
+
+    # Change the document and make the Chroma upsert fail.
+    changed_doc = Document(
+        source="api",
+        name="login.md",
+        url="https://example.com/login.md",
+        type="markdown",
+        content="# Login\n\nUpdated details.",
+        content_hash=Document.hash("# Login\n\nUpdated details."),
+    )
+    _patch_documents(monkeypatch, [changed_doc])
+
+    def failing_upsert(*args, **kwargs):
+        raise RuntimeError("Chroma upsert failed: connection reset")
+
+    monkeypatch.setattr(FakeCollection, "upsert", failing_upsert)
+
+    try:
+        Indexer(config=_make_config()).run()
+    except RuntimeError as exc:
+        assert "Chroma upsert failed" in str(exc)
+
+    # The old working vectors must be intact: nothing was deleted and the failed
+    # upsert wrote nothing.
+    assert collection._store == initial_store, (
+        "Existing vectors were lost despite upsert failure"
+    )
+
+
+def test_legacy_collection_without_model_metadata_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A collection holding vectors with no embedding_model metadata must be refused.
+
+    A legacy collection (created before model tracking existed, or populated
+    outside the indexer) has an unknown embedding space. Indexing or searching
+    against it would silently mix spaces, so the consistency guard must raise
+    with actionable rebuild guidance instead of proceeding.
+    """
+    from caracal_rag.indexing import Indexer
+    from caracal_rag.vectorstore import assert_embedding_model_consistent
+
+    class LegacyCollection:
+        def get(self, where=None, include=None):
+            return {
+                "ids": ["chunk-1"],
+                "metadatas": [{"url": "https://example.com/old.md", "content_hash": "abc"}],
+            }
+
+        def query(self, query_embeddings, n_results: int = 5):
+            return {"documents": [], "metadatas": [], "ids": [], "distances": []}
+
+    config = _make_config()
+    with pytest.raises(ValueError, match="no embedding_model metadata"):
+        assert_embedding_model_consistent(LegacyCollection(), config.embedding.model)
+
+    # The indexer must refuse to run against a legacy collection too: the guard
+    # runs at the start of run(), before any source loading or indexing.
+    monkeypatch.setattr(
+        "caracal_rag.indexing._chroma_client",
+        lambda *args, **kwargs: type(
+            "_C", (), {"get_or_create_collection": lambda self, name: LegacyCollection()}
+        )(),
+    )
+    _patch_documents(monkeypatch, [])
+    with pytest.raises(ValueError, match="no embedding_model metadata"):
+        Indexer(config=config).run()
+
+
+def test_empty_collection_is_consistent_and_first_run_initializes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty collection is consistent and the first run establishes the model.
+
+    The invariant is collection-level, not per-vector: an empty collection has no
+    vectors yet, so there is nothing to mix. The first successful indexing run
+    then tags every stored vector with the configured model.
+    """
+    from caracal_rag.vectorstore import assert_embedding_model_consistent
+
+    class EmptyCollection:
+        def get(self, where=None, include=None):
+            return {"ids": [], "metadatas": []}
+
+    config = _make_config()
+    # No exception -> the empty collection is consistent.
+    assert_embedding_model_consistent(EmptyCollection(), config.embedding.model)
+
+
 def test_embedding_model_change_detected_before_indexing(monkeypatch: pytest.MonkeyPatch) -> None:
     """Finding 3: Model mismatch must be detected before indexing.
 
