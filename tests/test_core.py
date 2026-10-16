@@ -44,7 +44,10 @@ from caracal_rag.sources import Document  # noqa: E402
 @pytest.fixture
 def example_config(tmp_path: Path) -> Path:
     data = {
-        "embedding": {"api_base": "http://localhost:3001/v1/embeddings"},
+        "embedding": {
+            "model": "text-embedding-3-small",
+            "api_base": "http://localhost:3001/v1",
+        },
         "chroma": {"host": "localhost", "port": 8000, "collection": "test"},
         "sources": [
             {
@@ -64,11 +67,27 @@ def test_config_parsing(example_config: Path) -> None:
     assert len(config.sources) == 1
     assert config.sources[0].name == "api-docs"
     assert config.chroma.collection == "test"
-    assert config.embedding.api_base == "http://localhost:3001/v1/embeddings"
+    assert config.embedding.api_base == "http://localhost:3001/v1"
+    assert config.embedding.model == "text-embedding-3-small"
 
 
 def test_infer_type() -> None:
     assert infer_type("login.md") == "markdown"
+
+
+def test_normalize_api_base_strips_trailing_embeddings() -> None:
+    """A configured ``/v1/embeddings`` base must not be double-appended."""
+    from caracal_rag.embeddings import _normalize_api_base
+
+    assert _normalize_api_base("http://localhost:3001/v1/embeddings") == (
+        "http://localhost:3001/v1"
+    )
+    assert _normalize_api_base("http://localhost:3001/v1") == "http://localhost:3001/v1"
+    assert _normalize_api_base("http://localhost:3001/v1/") == "http://localhost:3001/v1"
+    assert _normalize_api_base("http://localhost:3001/v1/embeddings/") == (
+        "http://localhost:3001/v1"
+    )
+    assert _normalize_api_base("http://localhost:3001") == "http://localhost:3001"
     assert infer_type("data.json") == "json"
     assert infer_type("setup.yml") == "yaml"
 
@@ -116,8 +135,24 @@ def test_indexing_idempotency(monkeypatch: pytest.MonkeyPatch) -> None:
         def add(self, **kwargs) -> None:
             self.added += 1
 
-        def get(self, where: dict) -> dict:
-            return {"ids": ["url1-chunk0"]}
+        def upsert(self, **kwargs) -> None:
+            self.added += 1
+
+        def get(self, where: dict | None = None, include: list[str] | None = None) -> dict:
+            # The collection is tracked: the stored chunk carries the configured
+            # embedding model, so the consistency guard passes and the idempotency
+            # check can compare against it.
+            return {
+                "ids": ["url1-chunk0"],
+                "metadatas": [
+                    {
+                        "url": "https://example.com/login.md",
+                        "embedding_model": "text-embedding-3-small",
+                        "content_hash": Document.hash("# Login"),
+                        "chunk_index": 0,
+                    }
+                ],
+            }
 
         def delete(self, ids: list[str]) -> None:
             self.deleted.extend(ids)

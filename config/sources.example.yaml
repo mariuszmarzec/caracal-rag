@@ -1,5 +1,6 @@
 embedding:
-  api_base: http://localhost:3001/v1/embeddings
+  model: text-embedding-3-small
+  api_base: http://localhost:3001/v1
 
 chroma:
   host: localhost
@@ -16,5 +17,5 @@ sources:
   - name: fiteo-docs
     type: github_md_doc_dir
     repo: mariuszmarzec/fiteo
-    path: docs
+    path: docs/api
     branch: master
