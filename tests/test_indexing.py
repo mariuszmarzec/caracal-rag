@@ -52,7 +52,7 @@ class FakeCollection:
         result: dict[str, Any] = {"ids": [cid for cid, _ in items]}
         if include is not None:
             if "metadatas" in include:
-                result["metadatas"] = [record.get("metadata", meta) for _, record in items]
+                result["metadatas"] = [record.get("metadata", record) for _, record in items]
             if "documents" in include:
                 result["documents"] = [record.get("text", "") for _, record in items]
             if "embeddings" in include:
