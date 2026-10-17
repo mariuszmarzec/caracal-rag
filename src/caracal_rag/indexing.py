@@ -139,26 +139,82 @@ class Indexer:
                 pass  # best effort: a lingering staged id is detected as drift
             raise exc
 
-        # The new content is safely in the collection. Remove only the old
-        # document chunks known to the in-memory cache -- NOT the staged copies,
-        # which share the document url and would otherwise be removed too -- so
-        # the new content survives even if the promotion step below fails.
+        # Snapshot the previous committed version before replacing deterministic ids.
+        # Chroma upsert may partially mutate a batch and then fail, so a metadata-only
+        # cache is not enough to restore the last known-good vectors.
+        previous = self.collection.get(
+            where={"url": document.url},
+            include=["documents", "embeddings", "metadatas"],
+        )
+        previous_ids = previous.get("ids") or []
+        previous_documents = previous.get("documents") or []
+        previous_embeddings = previous.get("embeddings") or []
+        previous_metadatas = previous.get("metadatas") or []
+        snapshot_ids: list[str] = []
+        snapshot_documents: list[str] = []
+        snapshot_embeddings: list[list[float]] = []
+        snapshot_metadatas: list[dict] = []
+        for index, chunk_id in enumerate(previous_ids):
+            metadata = (previous_metadatas[index] if index < len(previous_metadatas) else {}) or {}
+            if metadata.get("caracal_staging", False):
+                continue
+            if index >= len(previous_documents) or index >= len(previous_embeddings):
+                raise RuntimeError(
+                    "Cannot safely replace document because Chroma did not return its "
+                    "previous documents and embeddings for rollback."
+                )
+            snapshot_ids.append(chunk_id)
+            snapshot_documents.append(previous_documents[index])
+            snapshot_embeddings.append(list(previous_embeddings[index]))
+            snapshot_metadata = dict(metadata)
+            snapshot_metadata["caracal_staging"] = False
+            snapshot_metadatas.append(snapshot_metadata)
+
+        previous_id_set = set(snapshot_ids)
+
+        def restore_previous_version() -> None:
+            """Restore the previous committed rows after an ambiguous write failure."""
+            if snapshot_ids:
+                self.collection.upsert(
+                    ids=snapshot_ids,
+                    documents=snapshot_documents,
+                    embeddings=snapshot_embeddings,
+                    metadatas=snapshot_metadatas,
+                )
+            # Remove newly introduced final IDs that did not exist in the previous
+            # version (for example, chunks added when the document grew).
+            new_final_ids = [chunk_id for chunk_id in final_ids if chunk_id not in previous_id_set]
+            if new_final_ids:
+                self.collection.delete(ids=new_final_ids)
+
+        # Remove prior committed and staging rows for this URL only after the new
+        # staged write has completed. The committed snapshot above is retained in
+        # memory until promotion is confirmed.
         old_ids = [
             chunk_id
             for chunk_id, metadata in self._existing_chunks.items()
             if (metadata or {}).get("url") == document.url
         ]
-        if old_ids:
-            self.collection.delete(ids=old_ids)
-            for chunk_id in old_ids:
-                self._existing_chunks.pop(chunk_id, None)
+        try:
+            if old_ids:
+                self.collection.delete(ids=old_ids)
+        except Exception as delete_exc:
+            try:
+                restore_previous_version()
+                self._existing_chunks = get_existing_chunks(self.collection)
+            except Exception as restore_exc:
+                raise RuntimeError(
+                    "Failed to replace prior document chunks and failed to restore the "
+                    "previous committed version. Temporary staged rows are marked and "
+                    "excluded from search; rerun indexing to reconcile the document."
+                ) from restore_exc
+            raise RuntimeError(
+                "Could not remove prior document chunks; the previous committed version "
+                "was restored. Retry indexing after the Chroma delete failure is resolved."
+            ) from delete_exc
 
-        # Promote the staged chunks to their deterministic ids. These ids are now
-        # free (the old chunks were removed), so the write overwrites nothing. If
-        # it fails partway, some final ids may already hold the new content; the
-        # staged copies are still in the collection, so retrying the promotion is
-        # safe and idempotent -- it re-writes every final id with identical
-        # content.
+        # Promotion writes deterministic IDs. A partial failure may have mutated
+        # some final IDs, so retry once and restore the old snapshot if both attempts fail.
         try:
             upsert_chunks(
                 self.collection,
@@ -176,18 +232,37 @@ class Indexer:
                     embedding_model=self.embedding_model,
                     ids=final_ids,
                 )
-            except Exception as rollback_exc:
+            except Exception as promotion_exc:
+                try:
+                    restore_previous_version()
+                except Exception as restore_exc:
+                    try:
+                        self._existing_chunks = get_existing_chunks(self.collection)
+                    except Exception:
+                        pass
+                    raise RuntimeError(
+                        "Chroma promotion failed twice and the previous committed "
+                        "version could not be restored. Temporary stage rows remain "
+                        "marked and excluded from search; investigate Chroma and rerun "
+                        "indexing to reconcile the document."
+                    ) from restore_exc
+                self._existing_chunks = get_existing_chunks(self.collection)
                 raise RuntimeError(
-                    "Chroma upsert failed and the retry failed too. The document's "
-                    "old vectors were already removed but the replacement is still "
-                    "present under temporary staging ids; re-run indexing to "
-                    "reconcile the collection."
-                ) from rollback_exc
+                    "Chroma upsert failed and the retry failed too. The previous "
+                    "committed version was restored; temporary staging rows remain "
+                    "hidden from ordinary search and can be reconciled by rerunning "
+                    "indexing after the Chroma failure is resolved."
+                ) from promotion_exc
 
-        # Promotion succeeded: the temporary staging ids are now redundant.
-        self.collection.delete(ids=staging_ids)
+        # If stage cleanup fails, committed final rows remain searchable and the next
+        # run can discover/reconcile the marked stage rows.
+        try:
+            self.collection.delete(ids=staging_ids)
+        except Exception:
+            self._existing_chunks = get_existing_chunks(self.collection)
+            raise
+        self._drop_cached_chunks(document.url)
         self._upsert_cached_chunks(chunks)
-
     def _drop_cached_chunks(self, document_url: str) -> None:
         """Remove the document's chunks from the in-memory metadata cache."""
         self._existing_chunks = {

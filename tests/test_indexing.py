@@ -50,15 +50,20 @@ class FakeCollection:
             items = [(cid, meta) for cid, meta in items if meta.get("url") == url]
 
         result: dict[str, Any] = {"ids": [cid for cid, _ in items]}
-        if include is not None and "metadatas" in include:
-            result["metadatas"] = [meta for _, meta in items]
+        if include is not None:
+            if "metadatas" in include:
+                result["metadatas"] = [record.get("metadata", meta) for _, record in items]
+            if "documents" in include:
+                result["documents"] = [record.get("text", "") for _, record in items]
+            if "embeddings" in include:
+                result["embeddings"] = [record.get("embedding") for _, record in items]
         return result
 
     def upsert(self, ids, documents, embeddings, metadatas) -> None:
-        for cid, text, meta in zip(ids, documents, metadatas):
+        for index, (cid, text, meta) in enumerate(zip(ids, documents, metadatas)):
             self._store[cid] = {
                 "text": text,
-                "embedding": embeddings[0] if embeddings else None,
+                "embedding": embeddings[index] if index < len(embeddings) else None,
                 "metadata": meta,
                 **meta,
             }
@@ -1072,10 +1077,10 @@ def test_failed_promotion_hides_staging_and_retry_reconciles(
     _patch_embed(monkeypatch, captured)
 
     old_doc = _make_markdown_doc(
-        "api", "login.md", "https://example.com/login.md", "# Login\\n\\nOld content."
+        "api", "login.md", "https://example.com/login.md", "# Login\n\nOld content."
     )
     new_doc = _make_markdown_doc(
-        "api", "login.md", "https://example.com/login.md", "# Login\\n\\nNew content."
+        "api", "login.md", "https://example.com/login.md", "# Login\n\nNew content."
     )
     _patch_documents(monkeypatch, [old_doc])
     Indexer(config=config).run()
@@ -1087,6 +1092,9 @@ def test_failed_promotion_hides_staging_and_retry_reconciles(
     def fail_promotion_after_partial_write(self, ids, documents, embeddings, metadatas):
         nonlocal promotion_attempts
         if all(meta.get("caracal_staging", False) for meta in metadatas):
+            return original_upsert(self, ids, documents, embeddings, metadatas)
+        # Rollback writes the old content hash and must be allowed to succeed.
+        if all(meta.get("content_hash") == old_doc.content_hash for meta in metadatas):
             return original_upsert(self, ids, documents, embeddings, metadatas)
         promotion_attempts += 1
         # Mutate the deterministic row before raising to model an ambiguous
@@ -1108,15 +1116,17 @@ def test_failed_promotion_hides_staging_and_retry_reconciles(
     )
     assert_embedding_model_consistent(collection, config.embedding.model)
 
-    # Force a staged row into top-k. Search must expand, filter the staged row,
-    # and return the deterministic committed result instead.
+    # Force a staged row into top-k. Search filters it and returns the last
+    # committed version, rather than exposing staging or a partial replacement.
     result = search_chunks(collection, [0.1, 0.2], top_k=1)
     assert result["ids"] == [[next(iter(expected_ids))]]
     assert len(result["metadatas"][0]) == 1
     assert result["metadatas"][0][0].get("caracal_staging", False) is False
+    assert "Old content." in result["documents"][0][0]
+    assert "New content." not in result["documents"][0][0]
 
-    # A retry discovers prior staging and partial final ids, removes them,
-    # and leaves exactly the deterministic committed id set.
+    # A retry discovers prior staging rows, refreshes the document successfully,
+    # and leaves exactly the deterministic new-content ID set.
     monkeypatch.setattr(FakeCollection, "upsert", original_upsert)
     Indexer(config=config).run()
     assert set(collection._store) == expected_ids
