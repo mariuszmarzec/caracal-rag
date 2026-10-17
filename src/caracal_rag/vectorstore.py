@@ -40,21 +40,18 @@ def upsert_chunks(
     embeddings: list[list[float]],
     embedding_model: str,
     ids: list[str] | None = None,
+    staging: bool = False,
 ) -> None:
     """Insert or update chunk vectors.
 
     Chunks are keyed by a deterministic id (document url + chunk index), so
-    re-running the index on unchanged documents overwrites existing vectors
-    instead of appending duplicates. The embedding model that produced the
-    vectors is persisted in every chunk's metadata so a configured-model
-    change can be detected before indexing or searching -- vectors from a
-    different embedding space must never be mixed with query vectors.
+    re-running indexing on unchanged documents overwrites the previous vector.
+    The embedding model is persisted with each row to guard against mixing
+    embedding spaces.
 
-    ``ids`` overrides the deterministic ids computed from the chunks. It is used
-    by the indexer's staged replacement: new chunks are first written under
-    temporary ids so a partial Chroma failure can never overwrite the old
-    working vectors in place, and are only promoted to their final ids once the
-    old copy has been removed.
+    Temporary replacement writes pass staging=True. Those rows carry an
+    explicit caracal_staging marker so search and embedding-model consistency
+    checks can exclude them until promotion succeeds.
     """
     chunk_ids = list(ids) if ids is not None else [_chunk_id(chunk) for chunk in chunks]
     documents: list[str] = []
@@ -70,6 +67,7 @@ def upsert_chunks(
                 "content_hash": chunk.content_hash,
                 "chunk_index": chunk.chunk_index,
                 "embedding_model": embedding_model,
+                "caracal_staging": staging,
             }
         )
     if not chunk_ids:
@@ -147,7 +145,7 @@ def collection_embedding_models(collection) -> set[str]:
     metadatas = existing.get("metadatas") or []
     models: set[str] = set()
     for metadata in metadatas:
-        if not metadata:
+        if not metadata or metadata.get("caracal_staging", False):
             continue
         model = metadata.get("embedding_model")
         if model:
@@ -174,11 +172,17 @@ def collection_is_legacy(collection) -> bool:
     the whole collection unsafe to use.
     """
     existing = collection.get(include=["metadatas"])
-    ids = existing.get("ids") or []
     metadatas = existing.get("metadatas") or []
-    if not ids:
+    committed_metadatas = [
+        metadata or {}
+        for metadata in metadatas
+        if not (metadata or {}).get("caracal_staging", False)
+    ]
+    if not committed_metadatas:
+        # A collection containing only temporary replacement rows has no
+        # committed embedding space to validate. Indexing can safely retry.
         return False
-    return not all(metadata and metadata.get("embedding_model") for metadata in metadatas)
+    return not all(metadata.get("embedding_model") for metadata in committed_metadatas)
 
 
 def assert_embedding_model_consistent(collection, model: str) -> None:
@@ -216,5 +220,73 @@ def assert_embedding_model_consistent(collection, model: str) -> None:
     )
 
 
+def _contains_staging_results(response: dict) -> bool:
+    """Return True when a Chroma query result contains a temporary row."""
+    for group in response.get("metadatas") or []:
+        metadata_rows = group if isinstance(group, list) else [group]
+        if any(
+            isinstance(metadata, dict) and metadata.get("caracal_staging", False)
+            for metadata in metadata_rows
+        ):
+            return True
+    return False
+
+
+def _without_staging_results(response: dict, top_k: int) -> dict:
+    """Filter temporary rows from nested Chroma results, preserving field alignment."""
+    filtered = dict(response)
+    metadata_groups = response.get("metadatas") or []
+    for field in ("ids", "documents", "metadatas", "distances"):
+        groups = response.get(field)
+        if not isinstance(groups, list):
+            continue
+        filtered_groups = []
+        for query_index, values in enumerate(groups):
+            if not isinstance(values, list):
+                filtered_groups.append(values)
+                continue
+            metadata_values = (
+                metadata_groups[query_index]
+                if query_index < len(metadata_groups)
+                else []
+            )
+            if not isinstance(metadata_values, list):
+                metadata_values = [metadata_values]
+            keep = [
+                index
+                for index, metadata in enumerate(metadata_values)
+                if not (
+                    isinstance(metadata, dict)
+                    and metadata.get("caracal_staging", False)
+                )
+            ]
+            filtered_groups.append(
+                [values[index] for index in keep if index < len(values)][:top_k]
+            )
+        filtered[field] = filtered_groups
+    return filtered
+
+
 def search_chunks(collection, query_embedding: list[float], top_k: int = 5):
-    return collection.query(query_embeddings=[query_embedding], n_results=top_k)
+    """Search committed chunks only, including during recovery from a failed index run.
+
+    The usual top-k query is fast. When a temporary row occupies one of those
+    results, expand to the full collection result count, then filter temporary
+    rows. This preserves top-k semantics without a metadata filter that could
+    unintentionally hide older committed rows lacking the staging marker.
+    """
+    response = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=top_k,
+    )
+    if not _contains_staging_results(response):
+        return response
+
+    all_rows = collection.get(include=["metadatas"])
+    total = len(all_rows.get("ids") or [])
+    if total > top_k:
+        response = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=total,
+        )
+    return _without_staging_results(response, top_k)

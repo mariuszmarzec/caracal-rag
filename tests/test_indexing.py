@@ -26,7 +26,11 @@ sys.modules["chromadb"] = _chromadb_stub
 from caracal_rag import chunking  # noqa: E402
 from caracal_rag.config import AppConfig, SourceConfig  # noqa: E402
 from caracal_rag.sources import Document, SourceLoadError  # noqa: E402
-from caracal_rag.vectorstore import _chunk_id  # noqa: E402
+from caracal_rag.vectorstore import (  # noqa: E402
+    _chunk_id,
+    assert_embedding_model_consistent,
+    search_chunks,
+)
 
 
 class FakeCollection:
@@ -67,11 +71,19 @@ class FakeCollection:
             self._store.pop(cid, None)
 
     def query(self, query_embeddings, n_results: int = 5) -> dict[str, Any]:
+        # Stage rows sort first so tests prove search filters them.
+        items = sorted(
+            self._store.items(),
+            key=lambda item: (
+                not item[1].get("metadata", {}).get("caracal_staging", False),
+                item[0],
+            ),
+        )[:n_results]
         return {
-            "documents": [],
-            "metadatas": [],
-            "ids": [],
-            "distances": [],
+            "ids": [[cid for cid, _ in items]],
+            "documents": [[record.get("text", "") for _, record in items]],
+            "metadatas": [[record.get("metadata", {}) for _, record in items]],
+            "distances": [[0.0 for _ in items]],
         }
 
 
@@ -1045,3 +1057,70 @@ def test_untagged_document_chunk_is_refused(monkeypatch: pytest.MonkeyPatch) -> 
     with pytest.raises(ValueError, match="no embedding_model metadata"):
         Indexer(config=_make_config()).run()
     assert captured.get("model") != current_model or "texts" not in captured
+
+
+def test_failed_promotion_hides_staging_and_retry_reconciles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failed promotion must not leak temporary rows; retry must fully reconcile."""
+    from caracal_rag.indexing import Indexer
+
+    config = _make_config()
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+    captured: dict[str, Any] = {}
+    _patch_embed(monkeypatch, captured)
+
+    old_doc = _make_markdown_doc(
+        "api", "login.md", "https://example.com/login.md", "# Login\\n\\nOld content."
+    )
+    new_doc = _make_markdown_doc(
+        "api", "login.md", "https://example.com/login.md", "# Login\\n\\nNew content."
+    )
+    _patch_documents(monkeypatch, [old_doc])
+    Indexer(config=config).run()
+    assert collection._store
+
+    original_upsert = FakeCollection.upsert
+    promotion_attempts = 0
+
+    def fail_promotion_after_partial_write(self, ids, documents, embeddings, metadatas):
+        nonlocal promotion_attempts
+        if all(meta.get("caracal_staging", False) for meta in metadatas):
+            return original_upsert(self, ids, documents, embeddings, metadatas)
+        promotion_attempts += 1
+        # Mutate the deterministic row before raising to model an ambiguous
+        # remote failure after a partial/committed write.
+        original_upsert(self, ids[:1], documents[:1], embeddings[:1], metadatas[:1])
+        raise RuntimeError("simulated promotion failure after partial write")
+
+    monkeypatch.setattr(FakeCollection, "upsert", fail_promotion_after_partial_write)
+    _patch_documents(monkeypatch, [new_doc])
+    with pytest.raises(RuntimeError, match="Chroma upsert failed"):
+        Indexer(config=config).run()
+
+    assert promotion_attempts == 2
+    expected_ids = {_chunk_id(chunk) for chunk in chunking.chunk_document(new_doc)}
+    assert expected_ids.issubset(collection._store)
+    assert any(
+        record.get("metadata", {}).get("caracal_staging", False)
+        for record in collection._store.values()
+    )
+    assert_embedding_model_consistent(collection, config.embedding.model)
+
+    # Force a staged row into top-k. Search must expand, filter the staged row,
+    # and return the deterministic committed result instead.
+    result = search_chunks(collection, [0.1, 0.2], top_k=1)
+    assert result["ids"] == [[next(iter(expected_ids))]]
+    assert len(result["metadatas"][0]) == 1
+    assert result["metadatas"][0][0].get("caracal_staging", False) is False
+
+    # A retry discovers prior staging and partial final ids, removes them,
+    # and leaves exactly the deterministic committed id set.
+    monkeypatch.setattr(FakeCollection, "upsert", original_upsert)
+    Indexer(config=config).run()
+    assert set(collection._store) == expected_ids
+    assert all(
+        record.get("metadata", {}).get("caracal_staging", False) is False
+        for record in collection._store.values()
+    )

@@ -126,6 +126,7 @@ class Indexer:
                 embeddings,
                 embedding_model=self.embedding_model,
                 ids=staging_ids,
+                staging=True,
             )
         except Exception as exc:
             # Roll back the staged ids a partial failure may have written: they
@@ -212,6 +213,7 @@ class Indexer:
                 "content_hash": chunk.content_hash,
                 "chunk_index": chunk.chunk_index,
                 "embedding_model": self.embedding_model,
+                "caracal_staging": False,
             }
 
     def _is_unchanged(self, document: Document, existing: dict[str, dict]) -> bool:
