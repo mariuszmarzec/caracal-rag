@@ -491,11 +491,21 @@ def test_changed_chunk_count_is_refreshed(monkeypatch: pytest.MonkeyPatch) -> No
         chunk_index=99,
         text="stale",
     )
-    collection._store[_chunk_id(stale_chunk)] = {
+    stale_metadata = {
+        "source": document.source,
+        "document": document.name,
         "url": document.url,
+        "type": document.type,
         "content_hash": document.content_hash,
         "chunk_index": 99,
         "embedding_model": _make_config().embedding.model,
+        "caracal_staging": False,
+    }
+    collection._store[_chunk_id(stale_chunk)] = {
+        "text": stale_chunk.text,
+        "embedding": [0.1, 0.2],
+        "metadata": stale_metadata,
+        **stale_metadata,
     }
     assert len(collection._store) == 4
 
@@ -834,8 +844,9 @@ def test_embedding_model_change_detected_before_indexing(monkeypatch: pytest.Mon
     _patch_documents(monkeypatch, [seed_doc])
     Indexer(config=_make_config()).run()
     # Now overwrite the stored embedding model to simulate a different model
-    for cid, meta in collection._store.items():
-        meta["embedding_model"] = "text-embedding-3-large"
+    for record in collection._store.values():
+        record["embedding_model"] = "text-embedding-3-large"
+        record["metadata"]["embedding_model"] = "text-embedding-3-large"
 
     doc = Document(
         source="api",
