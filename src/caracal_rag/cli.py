@@ -5,7 +5,9 @@ import asyncio
 import sys
 
 from caracal_rag.config import AppConfig
+from caracal_rag.embeddings import embed_texts
 from caracal_rag.indexing import Indexer
+from caracal_rag.vectorstore import _chroma_client
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,12 +38,39 @@ def run_index(source: str | None) -> None:
     indexer = Indexer(config=config, source_filter=source)
     indexer.run()
 
-def run_check() -> None:
-    config = AppConfig.from_yaml("config/sources.example.yaml")
-    print(f"sources={len(config.sources)}")
-    print(f"embedding_api_base={config.embedding.api_base}")
-    print(f"chroma={config.chroma.host}:{config.chroma.port}")
-    print("ok")
+def run_check(config_path: str = "config/sources.example.yaml") -> None:
+    """Validate the configuration and connectivity to LiteLLM and Chroma.
+
+    Unlike a pure config parse, this actually connects to the configured
+    endpoints: it asks Chroma for a heartbeat and issues a probe embedding
+    through LiteLLM, so a misconfigured or unreachable service fails fast
+    with a non-zero exit code.
+    """
+    try:
+        config = AppConfig.from_yaml(config_path)
+        print(f"sources={len(config.sources)}")
+        print(f"embedding_api_base={config.embedding.api_base}")
+        print(f"chroma={config.chroma.host}:{config.chroma.port}")
+
+        client = _chroma_client(
+            host=config.chroma.host,
+            port=config.chroma.port,
+            ssl=config.chroma.ssl,
+        )
+        heartbeat = client.heartbeat()
+        print(f"chroma_heartbeat={heartbeat}")
+
+        vector = embed_texts(
+            ["caracal-rag check"],
+            api_base=config.embedding.api_base,
+            api_key=config.embedding.api_key,
+            model=config.embedding.model,
+        )
+        print(f"embedding_dim={len(vector[0])}")
+        print("ok")
+    except Exception as exc:  # noqa: BLE001 - surface any connectivity failure
+        print(f"check failed: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 def run_mcp(host_override: str | None = None, port_override: str | None = None) -> None:
     from caracal_rag.mcp import CaracalMcpServer

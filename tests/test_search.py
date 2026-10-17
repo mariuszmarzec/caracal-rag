@@ -47,6 +47,11 @@ class FakeCollection:
     def __init__(self) -> None:
         pass
 
+    def get(self, where: dict | None = None, include: list[str] | None = None) -> dict:
+        # Empty collection: no stored vectors, so the embedding-model consistency
+        # check passes and the query below is unaffected.
+        return {"ids": [], "metadatas": []}
+
     def query(self, query_embeddings, n_results: int = 5) -> dict:
         return {
             "documents": [["Login details."]],

@@ -28,6 +28,21 @@ def fetch_text(url: str, timeout: int = 30) -> str:
     return response.text
 
 
+class SourceLoadError(Exception):
+    """Raised when source loading partially fails.
+
+    A single document fetch may fail transiently (network glitch, rate limit)
+    while the rest of the source loads successfully. Carrying the documents that
+    were loaded before the failure lets the caller still index them while
+    skipping destructive reconciliation, so a transient fetch failure is never
+    mistaken for document deletion.
+    """
+
+    def __init__(self, message: str, documents: list[Document]) -> None:
+        super().__init__(message)
+        self.documents = documents
+
+
 def infer_type(name: str) -> str:
     lower = name.lower()
     if lower.endswith(".md"):
@@ -71,19 +86,40 @@ def github_md_doc_dir_documents(
     path: str,
     branch: str = "master",
 ) -> Iterable[Document]:
-    """Fetch all markdown files from a GitHub directory recursively."""
+    """Fetch all markdown files from a GitHub directory recursively.
+
+    Raises :class:`SourceLoadError` if any document fails to download. The
+    exception carries the documents that were already loaded so the caller can
+    still index them without running destructive reconciliation, which would
+    otherwise treat a transient fetch failure as a document deletion.
+    """
     owner_repo = repo
-    for file_path in _github_list_md_files(owner_repo, path, branch):
+    documents: list[Document] = []
+    # Materialize the file listing so a discovery failure (GitHub API down,
+    # auth failure, rate limit) is reported as a SourceLoadError carrying the
+    # documents already loaded. Without this, a raw exception aborts the run
+    # and the indexer skips destructive reconciliation -- but it also skips
+    # indexing anything from this source.
+    try:
+        files = list(_github_list_md_files(owner_repo, path, branch))
+    except Exception as exc:
+        raise SourceLoadError(
+            f"Failed to list markdown files in {owner_repo}/{path}: {exc}",
+            documents,
+        ) from exc
+    for file_path in files:
         url = (
             f"https://raw.githubusercontent.com/{owner_repo}/{branch}/{file_path}"
         )
         try:
             content = fetch_text(url)
-        except Exception:
-            continue
+        except Exception as exc:
+            raise SourceLoadError(
+                f"Failed to fetch {url}: {exc}", documents
+            ) from exc
         name = Path(file_path).name or url
         doc_type = infer_type(name)
-        yield Document(
+        doc = Document(
             source=source_name,
             name=name,
             url=url,
@@ -91,6 +127,8 @@ def github_md_doc_dir_documents(
             content=content,
             content_hash=Document.hash(content),
         )
+        documents.append(doc)
+        yield doc
 
 
 def _local_documents(source_name: str, path: str) -> Iterable[Document]:
@@ -138,14 +176,17 @@ def load_documents_from_source(source) -> Iterable[Document]:
     urls = source.urls or []
     if source.url:
         urls.append(source.url)
+    documents: list[Document] = []
     for url in urls:
         try:
             text = fetch_text(url)
-        except Exception:
-            continue
+        except Exception as exc:
+            raise SourceLoadError(
+                f"Failed to fetch {url}: {exc}", documents
+            ) from exc
         name = Path(url).name or url
         doc_type = infer_type(name)
-        yield Document(
+        doc = Document(
             source=source.name,
             name=name,
             url=url,
@@ -153,12 +194,31 @@ def load_documents_from_source(source) -> Iterable[Document]:
             content=text,
             content_hash=Document.hash(text),
         )
+        documents.append(doc)
+        yield doc
 
 
 def load_documents_from_config(config_path: str) -> Iterable[Document]:
+    """Load documents from every source configured in the given YAML file.
+
+    If a source fails to load partway through (e.g. a transient network error
+    while fetching one document), a :class:`SourceLoadError` is raised carrying
+    every document that was successfully loaded so far. The indexer uses this to
+    still index the successfully fetched documents while skipping destructive
+    reconciliation, so a transient fetch failure is never mistaken for a
+    document deletion.
+    """
     from caracal_rag.config import AppConfig
 
     app_config = AppConfig.from_yaml(config_path)
-
-    for source in app_config.sources:
-        yield from load_documents_from_source(source)
+    loaded: list[Document] = []
+    try:
+        for source in app_config.sources:
+            for document in load_documents_from_source(source):
+                loaded.append(document)
+                yield document
+    except SourceLoadError as exc:
+        # Re-raise carrying all documents loaded so far (across all sources).
+        raise SourceLoadError(
+            exc.args[0] if exc.args else str(exc), loaded
+        ) from exc
