@@ -35,7 +35,7 @@ fi
     echo "ERROR: virtual environment was not created at $VENV." >&2
     exit 1
 }
-"$VENV/bin/python" -m pip install --upgrade "$REPO_ROOT"
+"$VENV/bin/python" -m pip install --upgrade --force-reinstall "$REPO_ROOT"
 
 # Seed config only on first install. Never repair/replace an existing config
 # automatically: a malformed file may contain valuable user-defined settings.
