@@ -113,8 +113,14 @@ class ChromaConfig:
 
 
 def _coerce_source(item: dict[str, Any]) -> SourceConfig:
-    """Coerce a raw source dict into a SourceConfig."""
-    return SourceConfig(**item)
+    """Coerce the fields this version understands, leaving unknown YAML untouched.
+
+    Unknown source keys are ignored at runtime but are preserved by write_config
+    when setup updates the active YAML file. This allows forward-compatible
+    extensions without making a routine credential rotation erase user data.
+    """
+    allowed = {"name", "type", "urls", "url", "repo", "path", "branch"}
+    return SourceConfig(**{key: value for key, value in item.items() if key in allowed})
 
 
 @dataclass
