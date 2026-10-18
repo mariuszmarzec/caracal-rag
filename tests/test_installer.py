@@ -74,7 +74,7 @@ def test_installer_uses_private_venv_and_preserves_existing_state(tmp_path: Path
     assert secrets_path.stat().st_mode & 0o777 == 0o600
 
     install_args = (home / "venv-install.log").read_text(encoding="utf-8")
-    assert "pip install --upgrade" in install_args
+    assert "pip install --upgrade --force-reinstall" in install_args
     assert " -e " not in f" {install_args} "
 
     cli = subprocess.run(
@@ -107,5 +107,5 @@ def test_installer_uses_private_venv_and_preserves_existing_state(tmp_path: Path
         '{"embedding_model":"bge-m3"}\n'
     )
     assert (home / "venv-install.log").read_text(encoding="utf-8").count(
-        "pip install --upgrade"
+        "pip install --upgrade --force-reinstall"
     ) == 2
