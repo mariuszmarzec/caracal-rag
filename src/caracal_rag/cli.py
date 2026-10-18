@@ -141,7 +141,12 @@ def run_check(config_path: str | None = None) -> None:
     try:
         config = load_active_config(config_path)
         _ensure_api_key(config)
-        _assert_manifest_consistent(config)
+        # ``check`` must validate the *live* collection, not only the durable
+        # manifest. A missing manifest does not make a pre-existing collection
+        # compatible: vectors without model metadata (legacy/mixed) or tagged
+        # with a different family are refused here, before any probe call, so a
+        # mismatched index is never reported as healthy.
+        _assert_index_safe(config)
         print(f"config={config.config_path}")
         print(f"sources={len(config.sources)}")
         print(f"embedding_model={config.embedding.model}")

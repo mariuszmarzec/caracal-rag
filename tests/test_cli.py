@@ -62,6 +62,14 @@ def example_config(tmp_path: Path) -> Path:
     return config_path
 
 
+class _EmptyCollection:
+    def get(self, include=None):
+        return {"ids": [], "metadatas": []}
+
+    def query(self, **kwargs):
+        return {"ids": [], "metadatas": []}
+
+
 class _FakeChromaClient:
     def __init__(self, heartbeat: int = 1) -> None:
         self._heartbeat = heartbeat
@@ -70,6 +78,9 @@ class _FakeChromaClient:
         if self._heartbeat == 0:
             raise RuntimeError("Chroma heartbeat failed")
         return self._heartbeat
+
+    def get_or_create_collection(self, name: str) -> _EmptyCollection:
+        return _EmptyCollection()
 
 
 def test_check_validates_connectivity(
@@ -94,6 +105,84 @@ def test_check_validates_connectivity(
     assert "chroma_heartbeat=1" in out
     assert "embedding_dim=3" in out
     assert "ok" in out
+
+
+def test_check_refuses_mismatched_live_collection(
+    monkeypatch: pytest.MonkeyPatch, example_config: Path
+) -> None:
+    """``check`` must refuse a live collection holding vectors from another model.
+
+    The manifest may be absent or consistent, but the *collection* itself is
+    inspected: vectors tagged with a different family (or none at all) must
+    never be reported as healthy, because that would let an incompatible index
+    be reused for queries.
+    """
+    class _MismatchedCollection:
+        def get(self, include=None):
+            return {
+                "ids": ["a"],
+                "metadatas": [{"embedding_model": "old-family"}],
+            }
+
+        def query(self, **kwargs):
+            return {"ids": [["a"]], "metadatas": [[{"embedding_model": "old-family"}]]}
+
+    class _MismatchedChromaClient:
+        def heartbeat(self) -> int:
+            return 1
+
+        def get_or_create_collection(self, name: str) -> _MismatchedCollection:
+            return _MismatchedCollection()
+
+    monkeypatch.setattr(
+        "caracal_rag.cli._chroma_client",
+        lambda *args, **kwargs: _MismatchedChromaClient(),
+    )
+    monkeypatch.setattr(
+        "caracal_rag.cli.embed_texts",
+        lambda texts, api_base, api_key=None, model=None: [[0.1, 0.2, 0.3]],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_check(config_path=str(example_config))
+    assert excinfo.value.code != 0
+
+
+def test_check_refuses_legacy_live_collection(
+    monkeypatch: pytest.MonkeyPatch, example_config: Path
+) -> None:
+    """A collection holding untagged vectors must not pass ``check``.
+
+    A missing manifest alone is not proof that the index is compatible: the
+    live collection is inspected, and vectors without ``embedding_model``
+    metadata are refused with rebuild guidance.
+    """
+    class _LegacyCollection:
+        def get(self, include=None):
+            return {"ids": ["a", "b"], "metadatas": [{"embedding_model": None}, {}]}
+
+        def query(self, **kwargs):
+            return {"ids": [["a"]], "metadatas": [[{"embedding_model": None}]]}
+
+    class _LegacyChromaClient:
+        def heartbeat(self) -> int:
+            return 1
+
+        def get_or_create_collection(self, name: str) -> _LegacyCollection:
+            return _LegacyCollection()
+
+    monkeypatch.setattr(
+        "caracal_rag.cli._chroma_client",
+        lambda *args, **kwargs: _LegacyChromaClient(),
+    )
+    monkeypatch.setattr(
+        "caracal_rag.cli.embed_texts",
+        lambda texts, api_base, api_key=None, model=None: [[0.1, 0.2, 0.3]],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_check(config_path=str(example_config))
+    assert excinfo.value.code != 0
 
 
 def test_check_raises_on_chroma_failure(
