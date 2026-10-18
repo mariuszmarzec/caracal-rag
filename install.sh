@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Install Caracal RAG into ~/.caracal and configure stable FreeLLMAPI embeddings.
-#
-# Idempotent: re-running the script updates the installed configuration and
-# secrets in place without touching user-edited fields.
+# Install Caracal RAG into an isolated environment under ~/.caracal.
+# Safe to rerun: active config, secrets, and an existing index are preserved.
 set -euo pipefail
 
 CARACAL_HOME="${CARACAL_HOME:-$HOME/.caracal}"
@@ -10,30 +8,43 @@ CARACAL_PYTHON="${CARACAL_PYTHON:-python3}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXAMPLE_CONFIG="${REPO_ROOT}/config/sources.example.yaml"
 
-CONFIG_DIR="${CARACAL_HOME}/config"
-INDEX_DIR="${CARACAL_HOME}/index"
-CONFIG_PATH="${CONFIG_DIR}/sources.yaml"
-SECRETS_PATH="${CONFIG_DIR}/secrets.yaml"
-MANIFEST_PATH="${INDEX_DIR}/manifest.json"
+mkdir -p "$CARACAL_HOME"
+CARACAL_HOME="$(cd "$CARACAL_HOME" && pwd -P)"
+CONFIG_DIR="$CARACAL_HOME/config"
+INDEX_DIR="$CARACAL_HOME/index"
+BIN_DIR="$CARACAL_HOME/bin"
+VENV="$CARACAL_HOME/venv"
+CONFIG_PATH="$CONFIG_DIR/sources.yaml"
+SECRETS_PATH="$CONFIG_DIR/secrets.yaml"
+MANIFEST_PATH="$INDEX_DIR/manifest.json"
 
-echo "Installing Caracal RAG into ${CARACAL_HOME}"
+echo "Installing Caracal RAG into $CARACAL_HOME"
+mkdir -p "$CONFIG_DIR" "$INDEX_DIR" "$BIN_DIR"
 
-mkdir -p "${CONFIG_DIR}" "${INDEX_DIR}"
+command -v "$CARACAL_PYTHON" >/dev/null 2>&1 || {
+    echo "ERROR: Python interpreter '$CARACAL_PYTHON' was not found." >&2
+    exit 1
+}
 
-# 1. Install the package into a virtualenv when no project python is set.
-if ! "${CARACAL_PYTHON}" -c "import caracal_rag" 2>/dev/null; then
-    echo "caracal_rag is not importable from ${CARACAL_PYTHON}; installing with pip."
-    "${CARACAL_PYTHON}" -m pip install --quiet -e "${REPO_ROOT}"
+# The runtime must not depend on a system-wide pip install or on this checkout.
+# Keep the venv under CARACAL_HOME and install the package non-editably.
+if [ ! -x "$VENV/bin/python" ]; then
+    "$CARACAL_PYTHON" -m venv "$VENV"
 fi
+[ -x "$VENV/bin/python" ] || {
+    echo "ERROR: virtual environment was not created at $VENV." >&2
+    exit 1
+}
+"$VENV/bin/python" -m pip install --upgrade "$REPO_ROOT"
 
-# 2. Seed the active configuration from the example shipped with the checkout.
-#    Preserve an existing file so user edits are not lost.
-if [ ! -f "${CONFIG_PATH}" ]; then
-    if [ -f "${EXAMPLE_CONFIG}" ]; then
-        cp "${EXAMPLE_CONFIG}" "${CONFIG_PATH}"
-        echo "Wrote ${CONFIG_PATH} (from config/sources.example.yaml)"
+# Seed config only on first install. Never repair/replace an existing config
+# automatically: a malformed file may contain valuable user-defined settings.
+if [ ! -e "$CONFIG_PATH" ]; then
+    if [ -f "$EXAMPLE_CONFIG" ]; then
+        cp "$EXAMPLE_CONFIG" "$CONFIG_PATH"
+        echo "Wrote $CONFIG_PATH from the example template"
     else
-        cat > "${CONFIG_PATH}" <<'EOF'
+        cat >"$CONFIG_PATH" <<'EOF'
 embedding:
   model: bge-m3
   api_base: http://localhost:3001/v1
@@ -45,36 +56,42 @@ chroma:
 
 sources: []
 EOF
-        echo "Wrote ${CONFIG_PATH} (built-in template; checkout config not found)"
+        echo "Wrote $CONFIG_PATH from the built-in template"
     fi
 else
-    echo "Preserving existing ${CONFIG_PATH}"
+    echo "Preserving existing $CONFIG_PATH"
 fi
 
-# 3. Ensure the secrets file exists with restrictive permissions. The API key
-#    is never committed; the file is created empty and the user fills it in
-#    (or re-runs `caracal-rag setup`).
-if [ ! -f "${SECRETS_PATH}" ]; then
-    mkdir -p "${CONFIG_DIR}"
-    : > "${SECRETS_PATH}"
-    chmod 0600 "${SECRETS_PATH}"
-    echo "Created ${SECRETS_PATH} (mode 0600; add embedding.api_key or run 'caracal-rag setup')"
+# Secrets always live outside the source checkout and stay private.
+if [ ! -e "$SECRETS_PATH" ]; then
+    : >"$SECRETS_PATH"
+    chmod 0600 "$SECRETS_PATH"
+    echo "Created $SECRETS_PATH (mode 0600; configure it with 'caracal-rag setup')"
 else
-    chmod 0600 "${SECRETS_PATH}" || true
-    echo "Preserving ${SECRETS_PATH} (mode ensured 0600)"
+    [ -f "$SECRETS_PATH" ] || {
+        echo "ERROR: expected a regular secrets file at $SECRETS_PATH." >&2
+        exit 1
+    }
+    chmod 0600 "$SECRETS_PATH"
+    echo "Preserving existing secrets in $SECRETS_PATH (mode ensured 0600)"
 fi
 
-# 4. The manifest is bookkeeping written by indexing; leave it absent until the
-#    first index run so consistency checks report "no index yet".
-if [ -f "${MANIFEST_PATH}" ]; then
-    echo "Preserving existing ${MANIFEST_PATH}"
+if [ -f "$MANIFEST_PATH" ]; then
+    echo "Preserving existing index manifest $MANIFEST_PATH"
 fi
 
-# 5. Validate the installed configuration parses and the embedding model is set.
-"${CARACAL_PYTHON}" - <<PY
-import os
-os.environ["CARACAL_HOME"] = "${CARACAL_HOME}"
+# Stable wrapper at ~/.caracal/bin/caracal-rag; no global install or symlink
+# into the source checkout. It dispatches to the venv installed entry point.
+[ -x "$VENV/bin/caracal-rag" ] || {
+    echo "ERROR: pip install completed without creating $VENV/bin/caracal-rag." >&2
+    exit 1
+}
+printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$VENV/bin/caracal-rag" >"$BIN_DIR/caracal-rag"
+chmod 0755 "$BIN_DIR/caracal-rag"
+
+CARACAL_HOME="$CARACAL_HOME" "$VENV/bin/python" - <<'PY'
 from caracal_rag.config import load_active_config, resolve_home
+
 home = resolve_home()
 config = load_active_config(home.config_path)
 print(f"Active config: {home.config_path}")
@@ -85,10 +102,12 @@ print(f"Sources: {len(config.sources)}")
 PY
 
 echo
-echo "Caracal RAG is installed at ${CARACAL_HOME}."
+echo "Caracal RAG is installed at $CARACAL_HOME."
+echo "Add the CLI directory to PATH if it is not already available:"
+echo "  export PATH=\"$CARACAL_HOME/bin:\$PATH\""
 echo "Next steps:"
-echo "  1. Set your FreeLLMAPI API key:  export CARACAL_EMBEDDING_API_KEY=<key>"
-echo "     or run:                       caracal-rag setup --model bge-m3"
-echo "  2. Validate connectivity:        caracal-rag check"
-echo "  3. Build the index:              caracal-rag index"
-echo "  4. Start the MCP server:         caracal-rag mcp"
+echo "  1. Configure the model and key: caracal-rag setup --model bge-m3"
+echo "     (the key is prompted without echo; alternatively export CARACAL_EMBEDDING_API_KEY)"
+echo "  2. Validate connectivity:       caracal-rag check"
+echo "  3. Build the index:             caracal-rag index"
+echo "  4. Start MCP:                   caracal-rag mcp"
