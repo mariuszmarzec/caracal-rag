@@ -210,7 +210,18 @@ def load_documents_from_config(config_path: str) -> Iterable[Document]:
     """
     from caracal_rag.config import AppConfig
 
-    app_config = AppConfig.from_yaml(config_path)
+    resolved_config_path = Path(config_path).expanduser().resolve()
+    app_config = AppConfig.from_yaml(resolved_config_path)
+    # Resolve local paths relative to the active config file, not the process
+    # working directory. This makes installed ~/.caracal configs independent of
+    # where an MCP client or CLI happens to launch the process.
+    for source in app_config.sources:
+        if source.type == "local" and source.path:
+            local_path = Path(source.path).expanduser()
+            if not local_path.is_absolute():
+                source.path = str((resolved_config_path.parent / local_path).resolve())
+            else:
+                source.path = str(local_path.resolve())
     loaded: list[Document] = []
     try:
         for source in app_config.sources:
