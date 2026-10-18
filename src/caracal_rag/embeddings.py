@@ -63,7 +63,13 @@ def embed_texts(
     _get_embedding_client(api_base=api_base, api_key=api_key)
     vectors: list[list[float]] = []
     for text in texts:
-        response = litellm.embedding(input=[text], model=model)
+        try:
+            response = litellm.embedding(input=[text], model=model)
+        except Exception as exc:  # noqa: BLE001 - sanitize service diagnostics
+            # Provider clients sometimes include request details in exceptions.
+            # Never allow a configured key to leak from index/check/MCP errors.
+            safe_message = redact_secret(str(exc), api_key)
+            raise RuntimeError(f"Embedding request failed: {safe_message}") from None
         vectors.append(response.data[0]["embedding"])
     return vectors
 
