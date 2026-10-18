@@ -130,8 +130,18 @@ class AppConfig:
     @classmethod
     def from_yaml(cls, path: str | Path) -> AppConfig:
         path = Path(path)
-        with open(path, "r", encoding="utf-8") as fh:
-            data: dict[str, Any] = yaml.safe_load(fh) or {}
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data: dict[str, Any] = yaml.safe_load(fh) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            raise ConfigError(
+                f"Could not read active configuration at {path}; it was left unchanged. "
+                "Repair the file or restore a valid backup before running setup again."
+            ) from exc
+        if not isinstance(data, dict):
+            raise ConfigError(
+                f"Active configuration at {path} is not a YAML mapping; it was left unchanged."
+            )
 
         sources = [_coerce_source(item) for item in data.get("sources", [])]
         embedding_data = dict(data.get("embedding", {}) or {})
