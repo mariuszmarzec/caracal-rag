@@ -93,12 +93,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="FreeLLMAPI base URL (default: http://localhost:3001/v1)",
     )
-    setup_parser.add_argument(
-        "--api-key",
-        default=None,
-        help="FreeLLMAPI API key (prompted securely when omitted)",
-    )
-
     return parser
 
 
@@ -113,25 +107,22 @@ def run_index(source: str | None, config_path: str | None = None) -> None:
 
 def _write_manifest(config: AppConfig, indexer=None) -> None:
     home = resolve_home()
-    try:
-        # Determine document count: collect distinct document URLs from collection metadata
-        if indexer is not None:
-            # Use the indexer's cached chunks to count committed documents (skip staging)
-            committed_urls = {
-                (metadata or {}).get("url")
-                for chunk_id, metadata in indexer._existing_chunks.items()
-                if not (metadata or {}).get("caracal_staging", False)
-                and (metadata or {}).get("url")
-            }
-            document_count = len(committed_urls)
-        else:
-            # Fallback: empty if indexer not provided (should not happen in practice)
-            document_count = 0
-        write_manifest(home.manifest_path, build_manifest(config, document_count))
-    except ConfigError:
-        raise
-    except Exception:  # noqa: BLE001 - the manifest is bookkeeping, not the index
-        pass
+    if indexer is not None:
+        # Read back the post-index committed state instead of using the indexer's
+        # initial cache. The manifest must reflect the index that actually exists.
+        collection_data = indexer.collection.get(include=["metadatas"])
+        committed_urls = {
+            (metadata or {}).get("url")
+            for metadata in (collection_data.get("metadatas") or [])
+            if not (metadata or {}).get("caracal_staging", False)
+            and (metadata or {}).get("url")
+        }
+        document_count = len(committed_urls)
+    else:
+        document_count = 0
+    # A failed manifest write is a failed operation: do not silently claim that
+    # the index identity has been recorded when it has not.
+    write_manifest(home.manifest_path, build_manifest(config, document_count))
 
 
 def run_check(config_path: str | None = None) -> None:
@@ -142,6 +133,7 @@ def run_check(config_path: str | None = None) -> None:
     through LiteLLM, so a misconfigured or unreachable service fails fast
     with a non-zero exit code.
     """
+    config: AppConfig | None = None
     try:
         config = load_active_config(config_path)
         _ensure_api_key(config)
@@ -169,7 +161,11 @@ def run_check(config_path: str | None = None) -> None:
         print(f"embedding_dim={len(vector[0])}")
         print("ok")
     except Exception as exc:  # noqa: BLE001 - surface any connectivity failure
-        secret = config.embedding.api_key if config is not None else None
+        secret = (
+            config.embedding.api_key
+            if config is not None
+            else os.getenv(EMBEDDING_API_KEY_ENV)
+        )
         print(redact_secret(f"check failed: {exc}", secret), file=sys.stderr)
         sys.exit(1)
 
@@ -234,11 +230,10 @@ def run_setup(
     interactive = sys.stdin.isatty()
 
     existing: AppConfig | None = None
-    if home.config_path.is_file():
-        try:
-            existing = load_active_config()
-        except ConfigError:
-            existing = None
+    if home.config_path.exists():
+        # Fail closed for invalid existing configuration. Treating a malformed
+        # file as "not installed yet" would replace it with the example template.
+        existing = load_active_config()
 
     resolved_api_base = (
         api_base
@@ -257,7 +252,7 @@ def run_setup(
             )
 
     existing_key = existing.embedding.api_key if existing else None
-    resolved_api_key = api_key or existing_key
+    resolved_api_key = api_key or existing_key or os.getenv(EMBEDDING_API_KEY_ENV)
     if not resolved_api_key:
         if interactive:
             import getpass
@@ -329,7 +324,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "mcp":
         run_mcp(args.host, args.port, args.config)
     elif args.command == "setup":
-        run_setup(args.model, args.api_base, args.api_key)
+        run_setup(args.model, args.api_base)
     else:
         parser.print_help()
         sys.exit(1)
