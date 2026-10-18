@@ -23,7 +23,11 @@ from caracal_rag.manifest import (
     build_manifest,
     write_manifest,
 )
-from caracal_rag.vectorstore import _chroma_client
+from caracal_rag.vectorstore import (
+    _chroma_client,
+    assert_embedding_model_consistent,
+    ensure_collection,
+)
 
 # Example sources shipped with the checkout. Only used as a *template* for
 # `caracal-rag setup` when the repository can be located (i.e. running from a
@@ -99,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
 def run_index(source: str | None, config_path: str | None = None) -> None:
     config = load_active_config(config_path)
     _ensure_api_key(config)
-    _assert_manifest_consistent(config)
+    _assert_index_safe(config)
     indexer = Indexer(config=config, source_filter=source)
     indexer.run()
     _write_manifest(config, indexer=indexer)
@@ -179,7 +183,7 @@ def run_mcp(
 
     config = load_active_config(config_path)
     _ensure_api_key(config)
-    assert_manifest_consistent(resolve_home().manifest_path, config)
+    _assert_index_safe(config)
 
     # Allow host/port overrides via CLI for connection debugging
     if host_override is not None:
@@ -213,6 +217,26 @@ def _ensure_api_key(config: AppConfig) -> None:
 def _assert_manifest_consistent(config: AppConfig) -> None:
     home = resolve_home()
     assert_manifest_consistent(home.manifest_path, config)
+
+
+def _assert_index_safe(config: AppConfig) -> None:
+    """Pre-flight guard for indexing: manifest *and* the live collection.
+
+    The manifest is the durable record under ``~/.caracal``; the collection is
+    the live Chroma store. Both must agree with the active configuration. A
+    missing manifest must not be read as "legacy vectors are compatible": if
+    the collection already holds committed vectors, their embedding space is
+    inspected directly and an unknown, legacy or mismatched space is refused
+    with rebuild guidance before any vector is written or reused.
+    """
+    _assert_manifest_consistent(config)
+    client = _chroma_client(
+        host=config.chroma.host,
+        port=config.chroma.port,
+        ssl=config.chroma.ssl,
+    )
+    collection = ensure_collection(client, config.chroma.collection)
+    assert_embedding_model_consistent(collection, config.embedding.model)
 
 
 def run_setup(
@@ -261,8 +285,10 @@ def run_setup(
             resolved_api_key = getpass.getpass(prompt).strip() or None
         if not resolved_api_key:
             raise ConfigError(
-                "No FreeLLMAPI API key supplied. Re-run with --api-key <key>, "
-                f"or export {EMBEDDING_API_KEY_ENV} and re-run `caracal-rag setup`."
+                "No FreeLLMAPI API key supplied. Enter it at the hidden prompt, "
+                f"or export {EMBEDDING_API_KEY_ENV} and re-run `caracal-rag setup`. "
+                "Do not pass the key as a command-line argument: arguments can "
+                "leak through shell history and process listings."
             )
 
     # Reuse the example config from the checkout when available so sources

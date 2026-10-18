@@ -99,6 +99,13 @@ class EmbeddingConfig:
     )
 
 
+#: Fields this version knows how to coerce into ``EmbeddingConfig``. Any other
+#: key in the active YAML is preserved verbatim by ``write_config``.
+_EMBEDDING_FIELDS = {"model", "api_base", "api_key"}
+#: Fields this version knows how to coerce into ``ChromaConfig``.
+_CHROMA_FIELDS = {"host", "port", "collection", "ssl"}
+
+
 @dataclass
 class ChromaConfig:
     host: str = field(default_factory=lambda: os.getenv("CARACAL_CHROMA_HOST", "localhost"))
@@ -172,8 +179,16 @@ class AppConfig:
                 "that value in embedding.model before indexing or serving MCP."
             )
         embedding_data["model"] = str(configured_model).strip()
-        embedding = EmbeddingConfig(**embedding_data)
-        chroma = ChromaConfig(**chroma_data)
+        # Only pass keys this version understands to the dataclass. Unknown
+        # user-defined keys (forward-compatible extensions) are kept in
+        # ``embedding_data`` so write_config re-emits them verbatim instead of
+        # discarding them or crashing on an unexpected keyword argument.
+        embedding = EmbeddingConfig(
+            **{key: value for key, value in embedding_data.items() if key in _EMBEDDING_FIELDS}
+        )
+        chroma = ChromaConfig(
+            **{key: value for key, value in chroma_data.items() if key in _CHROMA_FIELDS}
+        )
 
         return cls(sources=sources, embedding=embedding, chroma=chroma, config_path=path)
 
