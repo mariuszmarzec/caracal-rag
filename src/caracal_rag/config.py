@@ -193,8 +193,14 @@ def load_secrets(path: Path) -> dict[str, str]:
             f"Secrets file {path} is group/world-readable (mode {oct(mode & 0o777)}). "
             f"Refusing to read it. Fix it with: chmod 600 {path}"
         )
-    with open(path, "r", encoding="utf-8") as fh:
-        data: dict[str, Any] = yaml.safe_load(fh) or {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data: dict[str, Any] = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise ConfigError(
+            f"Could not read secrets file at {path}; the key was not loaded. "
+            "Repair the YAML or restore a valid backup. Secret values are omitted from this error."
+        ) from exc
     embedding_data = data.get("embedding", {}) or {}
     api_key = embedding_data.get("api_key")
     if isinstance(api_key, str) and api_key.strip():
@@ -213,8 +219,14 @@ def write_secret_api_key(path: Path, api_key: str) -> None:
     data: dict[str, Any] = {}
     if path.is_file():
         os.chmod(path, 0o600)
-        with open(path, "r", encoding="utf-8") as fh:
-            data = yaml.safe_load(fh) or {}
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            raise ConfigError(
+                f"Could not read secrets file at {path}; it was left unchanged. "
+                "Repair the YAML or restore a valid backup before rotating credentials."
+            ) from exc
     embedding_data = dict(data.get("embedding", {}) or {})
     embedding_data["api_key"] = api_key
     data["embedding"] = embedding_data
@@ -261,6 +273,9 @@ def write_config(config: AppConfig, path: Path) -> None:
                 f"The embedding section in {path} is not a mapping; the file was left unchanged."
             )
         embedding_data = dict(embedding_data)
+        # Migrate any legacy key embedded in sources.yaml into secrets.yaml;
+        # active config is deliberately secret-free.
+        embedding_data.pop("api_key", None)
         embedding_data["model"] = config.embedding.model
         embedding_data["api_base"] = config.embedding.api_base
         data["embedding"] = embedding_data
