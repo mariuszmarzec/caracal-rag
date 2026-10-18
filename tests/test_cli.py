@@ -43,8 +43,9 @@ from caracal_rag.cli import run_check  # noqa: E402
 def example_config(tmp_path: Path) -> Path:
     data = {
         "embedding": {
-            "model": "text-embedding-3-small",
+            "model": "bge-m3",
             "api_base": "http://localhost:3001/v1",
+            "api_key": "test-key",
         },
         "chroma": {"host": "localhost", "port": 8000, "collection": "test"},
         "sources": [

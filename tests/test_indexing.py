@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 import types
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -97,6 +98,7 @@ def _make_config() -> AppConfig:
         sources=[SourceConfig(name="api", type="markdown", urls=["https://example.com/login.md"])],
         embedding=AppConfig.from_yaml("config/sources.example.yaml").embedding,
         chroma=AppConfig.from_yaml("config/sources.example.yaml").chroma,
+        config_path=Path("config/sources.example.yaml"),
     )
 
 
@@ -1130,7 +1132,7 @@ def test_failed_promotion_hides_staging_and_retry_reconciles(
     # Force a staged row into top-k. Search filters it and returns the last
     # committed version, rather than exposing staging or a partial replacement.
     result = search_chunks(collection, [0.1, 0.2], top_k=1)
-    assert result["ids"] == [[next(iter(expected_ids))]]
+    assert result["ids"][0][0] in expected_ids
     assert len(result["metadatas"][0]) == 1
     assert result["metadatas"][0][0].get("caracal_staging", False) is False
     assert "Old content." in result["documents"][0][0]

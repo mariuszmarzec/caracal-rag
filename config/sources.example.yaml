@@ -1,5 +1,5 @@
 embedding:
-  model: text-embedding-3-small
+  model: bge-m3
   api_base: http://localhost:3001/v1
 
 chroma:

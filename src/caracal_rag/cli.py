@@ -2,22 +2,67 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 
-from caracal_rag.config import AppConfig
-from caracal_rag.embeddings import embed_texts
+from caracal_rag.config import (
+    EMBEDDING_API_KEY_ENV,
+    AppConfig,
+    ChromaConfig,
+    ConfigError,
+    EmbeddingConfig,
+    load_active_config,
+    resolve_home,
+    write_config,
+    write_secret_api_key,
+)
+from caracal_rag.embeddings import embed_texts, redact_secret, validate_embedding_endpoint
 from caracal_rag.indexing import Indexer
+from caracal_rag.manifest import (
+    assert_manifest_consistent,
+    build_manifest,
+    write_manifest,
+)
 from caracal_rag.vectorstore import _chroma_client
+
+# Example sources shipped with the checkout. Only used as a *template* for
+# `caracal-rag setup` when the repository can be located (i.e. running from a
+# source checkout or the installed tree); the active installed configuration
+# under ``~/.caracal`` is what every runtime command actually uses.
+_CHECKOUT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_EXAMPLE_CONFIG = os.path.join(_CHECKOUT_DIR, "config", "sources.example.yaml")
+
+
+def _repo_root() -> str | None:
+    """Locate the repository root that contains ``config/sources.example.yaml``.
+
+    Returns ``None`` when the checkout cannot be found (for example, a
+    `pip install`-ed wheel without the config directory). In that case the
+    installer falls back to a built-in template.
+    """
+    if os.path.isfile(_EXAMPLE_CONFIG):
+        return _CHECKOUT_DIR
+    return None
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="caracal_rag")
+    parser = argparse.ArgumentParser(prog="caracal-rag")
     subparsers = parser.add_subparsers(dest="command")
 
     index_parser = subparsers.add_parser("index")
     index_parser.add_argument("--source", default=None, help="Index only the named source")
+    index_parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to the active configuration file (default: the installed configuration)",
+    )
 
-    subparsers.add_parser("check")
+    check_parser = subparsers.add_parser("check")
+    check_parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to the active configuration file (default: the installed configuration)",
+    )
 
     mcp_parser = subparsers.add_parser("mcp")
     mcp_parser.add_argument(
@@ -30,16 +75,67 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="MCP server port (unused; stdio transport)",
     )
+    mcp_parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to the active configuration file (default: the installed configuration)",
+    )
+
+    setup_parser = subparsers.add_parser("setup")
+    setup_parser.add_argument(
+        "--model",
+        default=None,
+        help="FreeLLMAPI embedding family/model (for example bge-m3). "
+        "Prompts interactively when omitted.",
+    )
+    setup_parser.add_argument(
+        "--api-base",
+        default=None,
+        help="FreeLLMAPI base URL (default: http://localhost:3001/v1)",
+    )
+    setup_parser.add_argument(
+        "--api-key",
+        default=None,
+        help="FreeLLMAPI API key (prompted securely when omitted)",
+    )
 
     return parser
 
-def run_index(source: str | None) -> None:
-    config = AppConfig.from_yaml("config/sources.example.yaml")
+
+def run_index(source: str | None, config_path: str | None = None) -> None:
+    config = load_active_config(config_path)
+    _ensure_api_key(config)
+    _assert_manifest_consistent(config)
     indexer = Indexer(config=config, source_filter=source)
     indexer.run()
+    _write_manifest(config, indexer=indexer)
 
-def run_check(config_path: str = "config/sources.example.yaml") -> None:
-    """Validate the configuration and connectivity to LiteLLM and Chroma.
+
+def _write_manifest(config: AppConfig, indexer=None) -> None:
+    home = resolve_home()
+    try:
+        # Determine document count: collect distinct document URLs from collection metadata
+        if indexer is not None:
+            # Use the indexer's cached chunks to count committed documents (skip staging)
+            committed_urls = {
+                (metadata or {}).get("url")
+                for chunk_id, metadata in indexer._existing_chunks.items()
+                if not (metadata or {}).get("caracal_staging", False)
+                and (metadata or {}).get("url")
+            }
+            document_count = len(committed_urls)
+        else:
+            # Fallback: empty if indexer not provided (should not happen in practice)
+            document_count = 0
+        write_manifest(home.manifest_path, build_manifest(config, document_count))
+    except ConfigError:
+        raise
+    except Exception:  # noqa: BLE001 - the manifest is bookkeeping, not the index
+        pass
+
+
+def run_check(config_path: str | None = None) -> None:
+    """Validate the active configuration and connectivity to FreeLLMAPI and Chroma.
 
     Unlike a pure config parse, this actually connects to the configured
     endpoints: it asks Chroma for a heartbeat and issues a probe embedding
@@ -47,8 +143,12 @@ def run_check(config_path: str = "config/sources.example.yaml") -> None:
     with a non-zero exit code.
     """
     try:
-        config = AppConfig.from_yaml(config_path)
+        config = load_active_config(config_path)
+        _ensure_api_key(config)
+        _assert_manifest_consistent(config)
+        print(f"config={config.config_path}")
         print(f"sources={len(config.sources)}")
+        print(f"embedding_model={config.embedding.model}")
         print(f"embedding_api_base={config.embedding.api_base}")
         print(f"chroma={config.chroma.host}:{config.chroma.port}")
 
@@ -63,19 +163,27 @@ def run_check(config_path: str = "config/sources.example.yaml") -> None:
         vector = embed_texts(
             ["caracal-rag check"],
             api_base=config.embedding.api_base,
-            api_key=config.embedding.api_key,
             model=config.embedding.model,
+            api_key=config.embedding.api_key,
         )
         print(f"embedding_dim={len(vector[0])}")
         print("ok")
     except Exception as exc:  # noqa: BLE001 - surface any connectivity failure
-        print(f"check failed: {exc}", file=sys.stderr)
+        secret = config.embedding.api_key if config is not None else None
+        print(redact_secret(f"check failed: {exc}", secret), file=sys.stderr)
         sys.exit(1)
 
-def run_mcp(host_override: str | None = None, port_override: str | None = None) -> None:
+
+def run_mcp(
+    host_override: str | None = None,
+    port_override: str | None = None,
+    config_path: str | None = None,
+) -> None:
     from caracal_rag.mcp import CaracalMcpServer
 
-    config = AppConfig.from_yaml("config/sources.example.yaml")
+    config = load_active_config(config_path)
+    _ensure_api_key(config)
+    assert_manifest_consistent(resolve_home().manifest_path, config)
 
     # Allow host/port overrides via CLI for connection debugging
     if host_override is not None:
@@ -90,18 +198,142 @@ def run_mcp(host_override: str | None = None, port_override: str | None = None) 
 
     asyncio.run(_run())
 
+
+def _ensure_api_key(config: AppConfig) -> None:
+    """Fail early with actionable guidance when the FreeLLMAPI key is absent.
+
+    The key is never echoed: the message only names where to obtain it.
+    """
+    if not config.embedding.api_key:
+        raise ConfigError(
+            f"No FreeLLMAPI API key is configured. Provide one by running "
+            "'caracal-rag setup', by exporting "
+            f"{EMBEDDING_API_KEY_ENV}, or by setting `embedding.api_key` in the "
+            "secrets file under your Caracal home (~/.caracal/config/secrets.yaml). "
+            "The key must be a valid key for the configured FreeLLMAPI endpoint."
+        )
+
+
+def _assert_manifest_consistent(config: AppConfig) -> None:
+    home = resolve_home()
+    assert_manifest_consistent(home.manifest_path, config)
+
+
+def run_setup(
+    model: str | None = None,
+    api_base: str | None = None,
+    api_key: str | None = None,
+) -> None:
+    """Create or update the active installed configuration and secrets.
+
+    Idempotent: existing configuration and secrets are preserved and only the
+    fields the user explicitly provides are updated. The API key is read from
+    a hidden prompt (not echoed) when not given on the command line.
+    """
+    home = resolve_home()
+    interactive = sys.stdin.isatty()
+
+    existing: AppConfig | None = None
+    if home.config_path.is_file():
+        try:
+            existing = load_active_config()
+        except ConfigError:
+            existing = None
+
+    resolved_api_base = (
+        api_base
+        or (existing.embedding.api_base if existing else "http://localhost:3001/v1")
+        or "http://localhost:3001/v1"
+    )
+    resolved_model = model or (existing.embedding.model if existing else None)
+    if not resolved_model:
+        if interactive:
+            resolved_model = input("Embedding family/model (e.g. bge-m3): ").strip() or None
+        if not resolved_model:
+            raise ConfigError(
+                "No embedding model supplied. Re-run with --model <family> "
+                "(check your FreeLLMAPI Models -> Embeddings page for what is "
+                "available in your deployment)."
+            )
+
+    existing_key = existing.embedding.api_key if existing else None
+    resolved_api_key = api_key or existing_key
+    if not resolved_api_key:
+        if interactive:
+            import getpass
+
+            prompt = "FreeLLMAPI API key (input hidden): "
+            resolved_api_key = getpass.getpass(prompt).strip() or None
+        if not resolved_api_key:
+            raise ConfigError(
+                "No FreeLLMAPI API key supplied. Re-run with --api-key <key>, "
+                f"or export {EMBEDDING_API_KEY_ENV} and re-run `caracal-rag setup`."
+            )
+
+    # Reuse the example config from the checkout when available so sources
+    # carry over; otherwise start from an empty source list the user can edit.
+    if existing is not None:
+        config = existing
+        config.embedding.model = resolved_model
+        config.embedding.api_base = resolved_api_base
+    elif _repo_root() is not None and os.path.isfile(_EXAMPLE_CONFIG):
+        config = AppConfig.from_yaml(_EXAMPLE_CONFIG)
+        config.embedding.model = resolved_model
+        config.embedding.api_base = resolved_api_base
+    else:
+        config = AppConfig(
+            sources=[],
+            embedding=EmbeddingConfig(
+                model=resolved_model,
+                api_base=resolved_api_base,
+                api_key=resolved_api_key,
+            ),
+            chroma=ChromaConfig(),
+            config_path=home.config_path,
+        )
+
+    # Persist the active configuration (no secrets) and the secrets file.
+    write_config(config, home.config_path)
+    write_secret_api_key(home.secrets_path, resolved_api_key)
+
+    # Validate the endpoint/model before declaring success so a bad model or
+    # key is caught during setup, not later during indexing.
+    config.embedding.api_key = resolved_api_key
+    try:
+        validate_embedding_endpoint(
+            api_base=config.embedding.api_base,
+            model=config.embedding.model,
+            api_key=config.embedding.api_key,
+        )
+    except ConfigError:
+        # Still keep the config/secrets on disk; the user can fix and re-check.
+        print(
+            f"Setup wrote configuration to {home.config_path} and the key to "
+            f"{home.secrets_path}, but the endpoint validation failed. Run "
+            "'caracal-rag check' to retry once the service is reachable.",
+            file=sys.stderr,
+        )
+        raise
+    print(f"Configured {home.config_path} (model={config.embedding.model!r})")
+    print(f"Stored FreeLLMAPI API key at {home.secrets_path} (mode 0600)")
+    print("Run 'caracal-rag check' to validate connectivity.")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "index":
-        run_index(args.source)
+        run_index(args.source, args.config)
     elif args.command == "check":
-        run_check()
+        run_check(args.config)
     elif args.command == "mcp":
-        run_mcp(args.host, args.port)
+        run_mcp(args.host, args.port, args.config)
+    elif args.command == "setup":
+        run_setup(args.model, args.api_base, args.api_key)
     else:
         parser.print_help()
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

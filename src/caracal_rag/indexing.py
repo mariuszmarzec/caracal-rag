@@ -41,7 +41,13 @@ class Indexer:
         self._existing_chunks = get_existing_chunks(self.collection)
 
     def _load_documents(self) -> Iterable[Document]:
-        for doc in load_documents_from_config("config/sources.example.yaml"):
+        if self.config.config_path is None:
+            raise ValueError(
+                "Indexer requires a configuration with a resolved config_path. "
+                "Load the active installed configuration via `load_active_config()` "
+                "and pass it to the indexer."
+            )
+        for doc in load_documents_from_config(self.config.config_path):
             if self.source_filter and doc.source != self.source_filter:
                 continue
             yield doc
