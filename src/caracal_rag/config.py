@@ -137,7 +137,8 @@ class AppConfig:
         embedding_data = dict(data.get("embedding", {}) or {})
         chroma_data = data.get("chroma", {}) or {}
 
-        if not str(embedding_data.get("model") or "").strip():
+        configured_model = embedding_data.get("model") or os.getenv("CARACAL_EMBEDDING_MODEL")
+        if not str(configured_model or "").strip():
             raise ConfigError(
                 f"embedding.model is missing in {path}. Set an explicit "
                 "FreeLLMAPI embedding family/model (for example "
@@ -147,6 +148,14 @@ class AppConfig:
                 "model: a silently chosen family would make the index "
                 "incompatible with the vectors you expect."
             )
+        if str(configured_model).strip().lower() == "auto":
+            raise ConfigError(
+                "embedding.model: auto is not safe for a persistent index because "
+                "FreeLLMAPI may change its default family. Select an explicit "
+                "family/model under FreeLLMAPI Models -> Embeddings and configure "
+                "that value in embedding.model before indexing or serving MCP."
+            )
+        embedding_data["model"] = str(configured_model).strip()
         embedding = EmbeddingConfig(**embedding_data)
         chroma = ChromaConfig(**chroma_data)
 
@@ -178,44 +187,85 @@ def load_secrets(path: Path) -> dict[str, str]:
 
 
 def write_secret_api_key(path: Path, api_key: str) -> None:
-    """Persist the FreeLLMAPI key in the secrets file with mode 0600.
+    """Persist the FreeLLMAPI key in a private secrets file.
 
-    Any other keys already present in the file are preserved. The file is
-    created with 0600 regardless of umask and chmod'd afterwards in case it
-    pre-existed with a looser mode.
+    Any other keys already present in the file are preserved. Existing files
+    are made private before they are read or rewritten, and the open descriptor
+    is forced to mode 0600 before secret bytes are written.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     data: dict[str, Any] = {}
     if path.is_file():
+        os.chmod(path, 0o600)
         with open(path, "r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh) or {}
     embedding_data = dict(data.get("embedding", {}) or {})
     embedding_data["api_key"] = api_key
     data["embedding"] = embedding_data
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=False)
-    os.chmod(path, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=False)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
 
 
 def write_config(config: AppConfig, path: Path) -> None:
-    """Write the active configuration (never including the API key)."""
+    """Persist active settings while preserving existing user-owned YAML keys.
+
+    Setup only changes the embedding model and endpoint. Existing source entries,
+    custom extensions, and unknown configuration fields are retained verbatim
+    semantically; an unreadable or non-mapping existing config is never replaced
+    with defaults.
+    """
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    data: dict[str, Any] = {
-        "embedding": {
-            "model": config.embedding.model,
-            "api_base": config.embedding.api_base,
-        },
-        "chroma": {
-            "host": config.chroma.host,
-            "port": config.chroma.port,
-            "collection": config.chroma.collection,
-            "ssl": config.chroma.ssl,
-        },
-        "sources": [_source_to_dict(source) for source in config.sources],
-    }
-    with open(path, "w", encoding="utf-8") as fh:
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            raise ConfigError(
+                f"Could not read existing configuration at {path}; it was left unchanged. "
+                "Repair the YAML manually before running setup again."
+            ) from exc
+        if not isinstance(data, dict):
+            raise ConfigError(
+                f"Existing configuration at {path} is not a YAML mapping; it was left unchanged."
+            )
+        data = dict(data)
+        embedding_data = data.get("embedding", {}) or {}
+        if not isinstance(embedding_data, dict):
+            raise ConfigError(
+                f"The embedding section in {path} is not a mapping; the file was left unchanged."
+            )
+        embedding_data = dict(embedding_data)
+        embedding_data["model"] = config.embedding.model
+        embedding_data["api_base"] = config.embedding.api_base
+        data["embedding"] = embedding_data
+    else:
+        data = {
+            "embedding": {
+                "model": config.embedding.model,
+                "api_base": config.embedding.api_base,
+            },
+            "chroma": {
+                "host": config.chroma.host,
+                "port": config.chroma.port,
+                "collection": config.chroma.collection,
+                "ssl": config.chroma.ssl,
+            },
+            "sources": [_source_to_dict(source) for source in config.sources],
+        }
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
         yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=False)
+    tmp.replace(path)
 
 
 def _source_to_dict(source: SourceConfig) -> dict[str, Any]:
