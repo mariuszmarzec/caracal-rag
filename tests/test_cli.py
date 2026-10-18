@@ -186,6 +186,7 @@ def test_setup_preserves_user_config_and_rotates_secret(
     saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert saved["custom_top_level"] == {"preserve": True}
     assert saved["embedding"]["provider_extension"] == {"keep": "yes"}
+    assert "api_key" not in saved["embedding"]
     assert saved["chroma"]["custom_chroma_option"] == "keep"
     assert saved["sources"][0]["source_extension"] == {"preserve": True}
     assert saved["sources"][0]["urls"] == ["https://example.com/custom.md"]
