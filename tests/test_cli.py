@@ -36,7 +36,8 @@ litellm_stub.api_base = None
 litellm_stub.api_key = None
 sys.modules["litellm"] = litellm_stub
 
-from caracal_rag.cli import run_check  # noqa: E402
+from caracal_rag.cli import build_parser, run_check, run_setup  # noqa: E402
+from caracal_rag.config import ConfigError
 
 
 @pytest.fixture
@@ -130,3 +131,107 @@ def test_check_raises_on_embedding_failure(
     with pytest.raises(SystemExit) as excinfo:
         run_check(config_path=str(example_config))
     assert excinfo.value.code != 0
+
+
+
+def _write_active_config(home: Path, *, model: str = "bge-m3") -> Path:
+    config_dir = home / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "sources.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "embedding": {
+                    "model": model,
+                    "api_base": "http://localhost:3001/v1",
+                    "provider_extension": {"keep": "yes"},
+                },
+                "chroma": {
+                    "host": "localhost",
+                    "port": 8000,
+                    "collection": "custom-collection",
+                    "custom_chroma_option": "keep",
+                },
+                "sources": [
+                    {
+                        "name": "custom-docs",
+                        "type": "markdown",
+                        "urls": ["https://example.com/custom.md"],
+                        "source_extension": {"preserve": True},
+                    }
+                ],
+                "custom_top_level": {"preserve": True},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    secrets_path = config_dir / "secrets.yaml"
+    secrets_path.write_text("embedding:\n  api_key: old-test-key\ncustom_secret_metadata: keep\n", encoding="utf-8")
+    secrets_path.chmod(0o600)
+    return config_path
+
+
+def test_setup_preserves_user_config_and_rotates_secret(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "caracal-home"
+    config_path = _write_active_config(home)
+    monkeypatch.setenv("CARACAL_HOME", str(home))
+    monkeypatch.setenv("CARACAL_EMBEDDING_API_KEY", "new-test-key")
+    monkeypatch.setattr("caracal_rag.cli.validate_embedding_endpoint", lambda **kwargs: None)
+
+    run_setup(model="bge-m3")
+
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert saved["custom_top_level"] == {"preserve": True}
+    assert saved["embedding"]["provider_extension"] == {"keep": "yes"}
+    assert saved["chroma"]["custom_chroma_option"] == "keep"
+    assert saved["sources"][0]["source_extension"] == {"preserve": True}
+    assert saved["sources"][0]["urls"] == ["https://example.com/custom.md"]
+
+    secrets_path = home / "config" / "secrets.yaml"
+    secrets = yaml.safe_load(secrets_path.read_text(encoding="utf-8"))
+    assert secrets["embedding"]["api_key"] == "new-test-key"
+    assert secrets["custom_secret_metadata"] == "keep"
+    assert secrets_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_setup_refuses_malformed_config_without_replacing_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "caracal-home"
+    config_dir = home / "config"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "sources.yaml"
+    original = "embedding: [this is not valid YAML\n"
+    config_path.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("CARACAL_HOME", str(home))
+    monkeypatch.setenv("CARACAL_EMBEDDING_API_KEY", "test-key")
+
+    with pytest.raises(ConfigError, match="left unchanged"):
+        run_setup(model="bge-m3")
+
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_check_missing_config_reports_actionable_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.setenv("CARACAL_HOME", str(tmp_path / "missing-home"))
+    monkeypatch.delenv("CARACAL_EMBEDDING_API_KEY", raising=False)
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_check()
+
+    assert excinfo.value.code != 0
+    err = capsys.readouterr().err
+    assert "No active configuration found" in err
+    assert "UnboundLocalError" not in err
+
+
+def test_setup_does_not_accept_key_as_command_argument() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args(["setup", "--api-key", "should-not-be-a-cli-argument"])
+    assert excinfo.value.code == 2
