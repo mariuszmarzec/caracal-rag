@@ -55,6 +55,11 @@ def embed_texts(
         raise ValueError(
             "embed_texts requires an explicit embedding model; none was configured."
         )
+    if str(model).strip().lower() == "auto":
+        raise ValueError(
+            "The embedding model 'auto' is unsafe for a persistent index because the "
+            "effective FreeLLMAPI family may change. Configure an explicit family/model."
+        )
     _get_embedding_client(api_base=api_base, api_key=api_key)
     vectors: list[list[float]] = []
     for text in texts:
