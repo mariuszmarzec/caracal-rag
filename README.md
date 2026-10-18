@@ -21,26 +21,35 @@ To install Caracal RAG into `~/.caracal` on WSL/Linux:
 
 ```bash
 ./install.sh
+
+# Make the installed CLI available in this shell; add this line to ~/.bashrc if desired.
+export PATH="$HOME/.caracal/bin:$PATH"
 ```
 
-The installer:
-1. Creates `~/.caracal/config` and `~/.caracal/index`.
-2. Seeds `~/.caracal/config/sources.yaml` from `config/sources.example.yaml` (defaulting to the stable FreeLLMAPI embedding family `bge-m3`).
-3. Creates `~/.caracal/config/secrets.yaml` with mode `0600` for your FreeLLMAPI key.
+The installer creates an isolated Python environment at `~/.caracal/venv`, installs the package non-editably into it, places a wrapper at `~/.caracal/bin/caracal-rag`, and creates `~/.caracal/config` and `~/.caracal/index`. It copies `config/sources.example.yaml` to `~/.caracal/config/sources.yaml` only on first install and preserves existing configuration, secrets and index metadata on reruns. Re-running it from an updated source checkout upgrades the package in the virtual environment without switching to a system-wide Python install.
 
-Next, set up your API key and validate connectivity:
+Configure the model and API key, then validate connectivity:
 
 ```bash
-# Provide key interactively or via flag
-caracal-rag setup --model bge-m3 --api-key <your-freellmapi-key>
+# The API key is prompted with input hidden; it is not placed in shell history.
+caracal-rag setup --model bge-m3
 
-# Validate connectivity to FreeLLMAPI and Chroma
+# Validate connectivity to FreeLLMAPI and Chroma.
 caracal-rag check
+```
+
+For a non-interactive shell, read the key without echoing it and let the CLI persist it privately:
+
+```bash
+read -rsp "FreeLLMAPI API key: " CARACAL_EMBEDDING_API_KEY; echo
+export CARACAL_EMBEDDING_API_KEY
+caracal-rag setup --model bge-m3
+unset CARACAL_EMBEDDING_API_KEY
 ```
 
 ## Commands
 
-- `caracal-rag setup [--model <family>] [--api-key <key>]`: configure embedding model & secrets under `~/.caracal`.
+- `caracal-rag setup [--model <family>] [--api-base <url>]`: configure the model, endpoint and secrets under `~/.caracal`; the API key is requested via hidden prompt if it is not already configured. Avoid passing keys as command-line arguments.
 - `caracal-rag check`: validate active configuration & connectivity to FreeLLMAPI and Chroma.
 - `caracal-rag index [--source <name>]`: build/refresh the active index under `~/.caracal`.
 - `caracal-rag mcp`: start the stdio MCP server for agent integration.
@@ -56,7 +65,7 @@ Secrets can also be supplied via the environment variable `CARACAL_EMBEDDING_API
 
 ### FreeLLMAPI Embedding Models
 
-FreeLLMAPI exposes embedding models via its OpenAI-compatible `/v1/embeddings` endpoint. Supported families include:
+FreeLLMAPI exposes embedding models via its OpenAI-compatible `/v1/embeddings` endpoint. See the [FreeLLMAPI embeddings API documentation](https://github.com/tashfeenahmed/freellmapi/blob/main/docs/en/api/01-rest-api.md#embeddings) and check **Models → Embeddings** in your own deployment for available families. Example families include:
 - `bge-m3` (1024-dim, default recommended)
 - `qwen3-embedding-0.6b` (1024-dim)
 - `nv-embedqa-e5-v5` (1024-dim)
@@ -65,7 +74,7 @@ FreeLLMAPI exposes embedding models via its OpenAI-compatible `/v1/embeddings` e
 - `gemini-embedding-001` (3072-dim)
 - `embeddinggemma-300m` (768-dim)
 
-`embedding.model` must be set explicitly. There is no implicit default model, ensuring vector spaces are never accidentally mixed.
+`embedding.model` is configured explicitly; `bge-m3` is the shipped template value and can be changed to a family enabled in your deployment. Do not use `auto`: this client must know the effective family so it can protect the existing index if FreeLLMAPI defaults change. Vectors from different families are not interchangeable, even if dimensions happen to match.
 
 ### Source Types
 
@@ -106,3 +115,43 @@ The MCP server exposes the `search_api(query, top_k=5)` tool to connected agents
 - **Changed documents** are refreshed atomically via staging rows and promoted upon success.
 - **Deleted documents** are removed from Chroma.
 - **Transient fetch failures** preserve existing vectors without deleting data.
+
+
+## Updating, rotating credentials, rebuilding and uninstalling
+
+### Upgrade
+
+From the Caracal source checkout, pull the version you want to install and rerun the installer:
+
+```bash
+git pull
+./install.sh
+```
+
+The installer updates the package in `~/.caracal/venv` from the checkout, but preserves `~/.caracal/config/sources.yaml`, `secrets.yaml`, and the local index manifest. The installed runtime uses the virtual environment and active configuration under `~/.caracal`; it does not import Python modules from the checkout.
+
+### Rotate the FreeLLMAPI key
+
+Run `caracal-rag setup` and enter the new key at the hidden prompt. In a scripted shell, use a non-echoing prompt rather than putting the key in a literal command:
+
+```bash
+read -rsp "New FreeLLMAPI API key: " CARACAL_EMBEDDING_API_KEY; echo
+export CARACAL_EMBEDDING_API_KEY
+caracal-rag setup --model bge-m3
+unset CARACAL_EMBEDDING_API_KEY
+```
+
+The CLI stores the key in `~/.caracal/config/secrets.yaml` with mode `0600`. Alternatively, `CARACAL_EMBEDDING_API_KEY` can be supplied to the runtime environment; do not place the key in scripts committed to Git or in command-line arguments.
+
+### Change the embedding model safely
+
+Do not point a populated collection at a different embedding family. The manifest and per-chunk metadata checks intentionally refuse an unknown, legacy, mixed or mismatched embedding space. To rebuild with a different explicit family, choose a new Chroma collection name in `~/.caracal/config/sources.yaml`, set `embedding.model` to that family's exact name, run `caracal-rag check`, then run `caracal-rag index`. Verify search/MCP against the new collection before retiring the old collection. This keeps the existing index available for rollback.
+
+### Uninstall
+
+Back up configuration, secrets and the local manifest before removing the installation. This removes the local package, configuration, credentials and local state; it does not delete the remote Chroma collection.
+
+```bash
+cp -a "$HOME/.caracal" "$HOME/caracal-backup"
+rm -rf "$HOME/.caracal"
+```
