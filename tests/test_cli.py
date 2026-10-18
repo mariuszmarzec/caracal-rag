@@ -37,7 +37,7 @@ litellm_stub.api_key = None
 sys.modules["litellm"] = litellm_stub
 
 from caracal_rag.cli import build_parser, run_check, run_setup  # noqa: E402
-from caracal_rag.config import ConfigError
+from caracal_rag.config import ConfigError  # noqa: E402
 
 
 @pytest.fixture
@@ -167,7 +167,10 @@ def _write_active_config(home: Path, *, model: str = "bge-m3") -> Path:
         encoding="utf-8",
     )
     secrets_path = config_dir / "secrets.yaml"
-    secrets_path.write_text("embedding:\n  api_key: old-test-key\ncustom_secret_metadata: keep\n", encoding="utf-8")
+    secrets_path.write_text(
+        "embedding:\n  api_key: old-test-key\ncustom_secret_metadata: keep\n",
+        encoding="utf-8",
+    )
     secrets_path.chmod(0o600)
     return config_path
 
