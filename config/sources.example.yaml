@@ -7,6 +7,14 @@ chroma:
   port: 3400
   collection: caracal-base
 
+# Access-token policy for protected interfaces (the MCP server).
+# The token VALUE is never stored here: it lives in config/secrets.yaml
+# (access_token.token, mode 0600) or in the CARACAL_ACCESS_TOKEN environment
+# variable. `enabled` defaults to true, so every protected path requires a
+# valid token; there is no silent unauthenticated fallback.
+access_token:
+  enabled: true
+
 # Relative local-source paths are resolved against this config file's directory.
 # To add local files, use an absolute path or a path relative to ~/.caracal/config.
 sources:

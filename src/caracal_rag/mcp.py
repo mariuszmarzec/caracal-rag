@@ -6,6 +6,7 @@ from typing import Any
 from mcp.server import Server
 from mcp.types import TextContent, Tool
 
+from caracal_rag.auth import authenticate
 from caracal_rag.config import AppConfig
 from caracal_rag.embeddings import embed_texts
 from caracal_rag.vectorstore import (
@@ -15,6 +16,11 @@ from caracal_rag.vectorstore import (
     ensure_collection,
     search_chunks,
 )
+
+#: Name of the request argument clients use to supply the access token on
+#: every protected tool call. It is a regular tool argument so MCP clients can
+#: pass it alongside the query; the value is never logged or echoed.
+ACCESS_TOKEN_FIELD = "access_token"
 
 
 @dataclass
@@ -42,7 +48,12 @@ class CaracalMcpServer:
             return [
                 Tool(
                     name="search_api",
-                    description="Semantic search over indexed documentation chunks.",
+                    description=(
+                        "Semantic search over indexed documentation chunks. "
+                        "Protected: every call must supply a valid `access_token` "
+                        "matching the configured token; missing or invalid tokens "
+                        "are denied."
+                    ),
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -55,20 +66,41 @@ class CaracalMcpServer:
                                 "description": "Number of results.",
                                 "default": 5,
                             },
+                            ACCESS_TOKEN_FIELD: {
+                                "type": "string",
+                                "description": (
+                                    "Required access token for this protected "
+                                    "interface. Never echoed or logged."
+                                ),
+                            },
                         },
-                        "required": ["query"],
+                        "required": ["query", ACCESS_TOKEN_FIELD],
                     },
                 ),
             ]
 
         @self.server.call_tool()
         async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+            # Authenticate before dispatching on ANY tool call. A protected
+            # interface must never answer a request that did not present a valid
+            # token, including requests for tools that do not exist.
+            self._authenticate(arguments)
             if name == "search_api":
                 query = arguments.get("query")
                 top_k = int(arguments.get("top_k", 5))
                 results = self.search(query=query, top_k=top_k)
                 return [TextContent(type="text", text=self._format(results))]
             raise ValueError(f"Unknown tool: {name}")
+
+    def _authenticate(self, arguments: dict[str, Any]) -> None:
+        """Require a valid access token for every protected tool call.
+
+        Missing or invalid tokens are denied with an actionable error that
+        never reveals the configured token. The presented token is consumed
+        from the tool arguments and is never echoed back to the client.
+        """
+        presented = arguments.get(ACCESS_TOKEN_FIELD)
+        authenticate(self.config.access_token, presented)
 
     def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
         # Never mix query vectors from the current model with stored vectors

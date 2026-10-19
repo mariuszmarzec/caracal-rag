@@ -40,6 +40,17 @@ sys.modules["litellm"] = litellm_stub
 from caracal_rag.cli import build_parser, run_check, run_index, run_setup  # noqa: E402
 from caracal_rag.config import ConfigError  # noqa: E402
 
+#: Every protected interface path requires a valid token. These tests stub the
+#: embedding/Chroma services, so they supply a token through the environment
+#: variable the runtime reads -- never through a command-line argument or a
+#: checked-in secret.
+_TEST_TOKEN = "test-access-token-1234"
+
+
+@pytest.fixture(autouse=True)
+def _access_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CARACAL_ACCESS_TOKEN", _TEST_TOKEN)
+
 
 @pytest.fixture
 def example_config(tmp_path: Path) -> Path:
@@ -50,6 +61,7 @@ def example_config(tmp_path: Path) -> Path:
             "api_key": "test-key",
         },
         "chroma": {"host": "localhost", "port": 8000, "collection": "test"},
+        "access_token": {"enabled": True},
         "sources": [
             {
                 "name": "api-docs",
