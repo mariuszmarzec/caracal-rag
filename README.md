@@ -147,6 +147,8 @@ The CLI stores the key in `~/.caracal/config/secrets.yaml` with mode `0600`. Alt
 
 Do not point a populated collection at a different embedding family. The manifest and per-chunk metadata checks intentionally refuse an unknown, legacy, mixed or mismatched embedding space. To rebuild with a different explicit family, choose a new Chroma collection name in `~/.caracal/config/sources.yaml`, set `embedding.model` to that family's exact name, run `caracal-rag check`, then run `caracal-rag index`. Verify search/MCP against the new collection before retiring the old collection. This keeps the existing index available for rollback.
 
+The embedding **dimension** is checked the same way: `caracal-rag check` probes the configured model and refuses a manifest or live collection whose stored vectors differ in dimensionality, even when the family name agrees. Two models that happen to agree on dimension are still different embedding spaces and must never be mixed.
+
 ### Uninstall
 
 Back up configuration, secrets and the local manifest before removing the installation. This removes the local package, configuration, credentials and local state; it does not delete the remote Chroma collection.

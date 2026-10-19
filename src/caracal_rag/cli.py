@@ -16,7 +16,7 @@ from caracal_rag.config import (
     write_config,
     write_secret_api_key,
 )
-from caracal_rag.embeddings import embed_texts, redact_secret, validate_embedding_endpoint
+from caracal_rag.embeddings import probe_embedding_dim, redact_secret, validate_embedding_endpoint
 from caracal_rag.indexing import Indexer
 from caracal_rag.manifest import (
     assert_manifest_consistent,
@@ -25,6 +25,7 @@ from caracal_rag.manifest import (
 )
 from caracal_rag.vectorstore import (
     _chroma_client,
+    assert_embedding_dim_consistent,
     assert_embedding_model_consistent,
     ensure_collection,
 )
@@ -103,13 +104,17 @@ def build_parser() -> argparse.ArgumentParser:
 def run_index(source: str | None, config_path: str | None = None) -> None:
     config = load_active_config(config_path)
     _ensure_api_key(config)
-    _assert_index_safe(config)
-    indexer = Indexer(config=config, source_filter=source)
+    # Probe the live dimension before touching the index. A mismatch against the
+    # manifest or the collection is refused by _assert_index_safe, so a failed
+    # probe never leaves the manifest in an inconsistent state.
+    observed_dim = _probe_dim(config)
+    _assert_index_safe(config, observed_dim=observed_dim)
+    indexer = Indexer(config=config, source_filter=source, embedding_dim=observed_dim)
     indexer.run()
-    _write_manifest(config, indexer=indexer)
+    _write_manifest(config, indexer=indexer, embedding_dim=observed_dim)
 
 
-def _write_manifest(config: AppConfig, indexer=None) -> None:
+def _write_manifest(config: AppConfig, indexer=None, embedding_dim: int | None = None) -> None:
     home = resolve_home()
     if indexer is not None:
         # Read back the post-index committed state instead of using the indexer's
@@ -126,7 +131,10 @@ def _write_manifest(config: AppConfig, indexer=None) -> None:
         document_count = 0
     # A failed manifest write is a failed operation: do not silently claim that
     # the index identity has been recorded when it has not.
-    write_manifest(home.manifest_path, build_manifest(config, document_count))
+    write_manifest(
+        home.manifest_path,
+        build_manifest(config, document_count, embedding_dim=embedding_dim),
+    )
 
 
 def run_check(config_path: str | None = None) -> None:
@@ -144,9 +152,10 @@ def run_check(config_path: str | None = None) -> None:
         # ``check`` must validate the *live* collection, not only the durable
         # manifest. A missing manifest does not make a pre-existing collection
         # compatible: vectors without model metadata (legacy/mixed) or tagged
-        # with a different family are refused here, before any probe call, so a
-        # mismatched index is never reported as healthy.
-        _assert_index_safe(config)
+        # with a different family or dimension are refused here, before any
+        # probe call, so a mismatched index is never reported as healthy.
+        observed_dim = _probe_dim(config)
+        _assert_index_safe(config, observed_dim=observed_dim)
         print(f"config={config.config_path}")
         print(f"sources={len(config.sources)}")
         print(f"embedding_model={config.embedding.model}")
@@ -161,13 +170,7 @@ def run_check(config_path: str | None = None) -> None:
         heartbeat = client.heartbeat()
         print(f"chroma_heartbeat={heartbeat}")
 
-        vector = embed_texts(
-            ["caracal-rag check"],
-            api_base=config.embedding.api_base,
-            model=config.embedding.model,
-            api_key=config.embedding.api_key,
-        )
-        print(f"embedding_dim={len(vector[0])}")
+        print(f"embedding_dim={observed_dim}")
         print("ok")
     except Exception as exc:  # noqa: BLE001 - surface any connectivity failure
         secret = (
@@ -188,7 +191,11 @@ def run_mcp(
 
     config = load_active_config(config_path)
     _ensure_api_key(config)
-    _assert_index_safe(config)
+    # Probe the live dimension before the MCP server starts serving. The
+    # manifest and collection are validated against it, so a dimension drift
+    # is refused before any query vector is generated.
+    observed_dim = _probe_dim(config)
+    _assert_index_safe(config, observed_dim=observed_dim)
 
     # Allow host/port overrides via CLI for connection debugging
     if host_override is not None:
@@ -219,22 +226,51 @@ def _ensure_api_key(config: AppConfig) -> None:
         )
 
 
-def _assert_manifest_consistent(config: AppConfig) -> None:
+def _assert_manifest_consistent(config: AppConfig, observed_dim: int | None = None) -> None:
     home = resolve_home()
-    assert_manifest_consistent(home.manifest_path, config)
+    assert_manifest_consistent(home.manifest_path, config, observed_dim=observed_dim)
 
 
-def _assert_index_safe(config: AppConfig) -> None:
+def _probe_dim(config: AppConfig) -> int:
+    """Probe the configured embedding endpoint and return the vector dimension.
+
+    Failures are wrapped in the same actionable ``ConfigError`` as
+    ``validate_embedding_endpoint``, so a bad model or unreachable service
+    aborts the runtime command with a non-zero exit instead of leaving the
+    index in an unknown state.
+    """
+    from caracal_rag.config import ConfigError
+
+    try:
+        return probe_embedding_dim(
+            api_base=config.embedding.api_base,
+            model=config.embedding.model,
+            api_key=config.embedding.api_key,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface any probe failure
+        raise ConfigError(
+            f"Could not probe the embedding endpoint at "
+            f"{config.embedding.api_base!r} for model {config.embedding.model!r}: "
+            f"{redact_secret(str(exc), config.embedding.api_key)}. Verify the "
+            "FreeLLMAPI service is running, the base URL is correct, and that "
+            "model is enabled under FreeLLMAPI Models -> Embeddings."
+        ) from exc
+
+
+def _assert_index_safe(
+    config: AppConfig, observed_dim: int | None = None
+) -> None:
     """Pre-flight guard for indexing: manifest *and* the live collection.
 
     The manifest is the durable record under ``~/.caracal``; the collection is
     the live Chroma store. Both must agree with the active configuration. A
     missing manifest must not be read as "legacy vectors are compatible": if
     the collection already holds committed vectors, their embedding space is
-    inspected directly and an unknown, legacy or mismatched space is refused
-    with rebuild guidance before any vector is written or reused.
+    inspected directly and an unknown, legacy, mismatched or differently
+    dimensional space is refused with rebuild guidance before any vector is
+    written or reused.
     """
-    _assert_manifest_consistent(config)
+    _assert_manifest_consistent(config, observed_dim=observed_dim)
     client = _chroma_client(
         host=config.chroma.host,
         port=config.chroma.port,
@@ -242,6 +278,8 @@ def _assert_index_safe(config: AppConfig) -> None:
     )
     collection = ensure_collection(client, config.chroma.collection)
     assert_embedding_model_consistent(collection, config.embedding.model)
+    if observed_dim is not None:
+        assert_embedding_dim_consistent(collection, observed_dim)
 
 
 def run_setup(

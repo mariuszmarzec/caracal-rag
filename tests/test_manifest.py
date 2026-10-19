@@ -21,7 +21,11 @@ from caracal_rag.manifest import (  # noqa: E402
     load_manifest,
     write_manifest,
 )
-from caracal_rag.vectorstore import assert_embedding_model_consistent  # noqa: E402
+from caracal_rag.vectorstore import (  # noqa: E402
+    assert_embedding_dim_consistent,
+    assert_embedding_model_consistent,
+    collection_embedding_dim,
+)
 
 
 def _config() -> AppConfig:
@@ -126,3 +130,149 @@ def test_auto_embedding_family_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="model: auto is not safe"):
         AppConfig.from_yaml(config_path)
+
+
+def test_manifest_persists_and_round_trips_embedding_dim(tmp_path: Path) -> None:
+    config = _config()
+    manifest_path = tmp_path / "index" / "manifest.json"
+
+    write_manifest(
+        manifest_path,
+        build_manifest(config, document_count=4, embedding_dim=1024),
+    )
+    saved = load_manifest(manifest_path)
+    assert saved is not None
+    assert saved.embedding_dim == 1024
+    assert saved.matches(config, observed_dim=1024)
+    assert not saved.matches(config, observed_dim=512)
+
+
+def test_legacy_manifest_without_dim_is_refused_when_probed(tmp_path: Path) -> None:
+    """A manifest written before dimension tracking must not be trusted.
+
+    The model, collection and api_base agree, but without an ``embedding_dim``
+    the manifest cannot prove the embedding space, so it is refused when a
+    live probe is available -- mirroring how a legacy Chroma collection is
+    refused.
+    """
+    config = _config()
+    manifest_path = tmp_path / "manifest.json"
+    write_manifest(manifest_path, build_manifest(config, document_count=3))
+
+    with pytest.raises(ConfigError, match="Mixing embedding spaces"):
+        assert_manifest_consistent(manifest_path, config, observed_dim=1024)
+
+
+def test_manifest_dimension_drift_is_refused(tmp_path: Path) -> None:
+    config = _config()
+    manifest_path = tmp_path / "manifest.json"
+    write_manifest(
+        manifest_path,
+        build_manifest(config, document_count=3, embedding_dim=1024),
+    )
+
+    with pytest.raises(ConfigError, match="dimensional"):
+        assert_manifest_consistent(manifest_path, config, observed_dim=512)
+
+
+def test_invalid_manifest_embedding_dim_fails_closed(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "collection": "caracal-base",
+                "embedding_model": "bge-m3",
+                "embedding_api_base": "http://localhost:3001/v1",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "embedding_dim": "not-a-dimension",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="manifest.*invalid"):
+        load_manifest(manifest_path)
+
+
+def test_collection_embedding_dim_metadata_path() -> None:
+    class MetadataCollection:
+        def get(self, include=None):
+            return {
+                "ids": ["a", "b"],
+                "metadatas": [
+                    {"embedding_dim": 1024},
+                    {"embedding_dim": 1024},
+                ],
+                "embeddings": [[0.0] * 1024, [0.0] * 1024],
+            }
+
+    assert collection_embedding_dim(MetadataCollection()) == 1024
+
+
+def test_collection_embedding_dim_legacy_derives_from_vectors() -> None:
+    class LegacyCollection:
+        def get(self, include=None):
+            return {
+                "ids": ["a"],
+                "metadatas": [{"embedding_model": "bge-m3"}],
+                "embeddings": [[0.0] * 1024],
+            }
+
+    assert collection_embedding_dim(LegacyCollection()) == 1024
+
+
+def test_collection_embedding_dim_empty_is_none() -> None:
+    class EmptyCollection:
+        def get(self, include=None):
+            return {"ids": [], "metadatas": [], "embeddings": []}
+
+    assert collection_embedding_dim(EmptyCollection()) is None
+
+
+def test_collection_embedding_dim_mixed_is_refused() -> None:
+    class MixedCollection:
+        def get(self, include=None):
+            return {
+                "ids": ["a", "b"],
+                "metadatas": [
+                    {"embedding_dim": 1024},
+                    {"embedding_dim": 512},
+                ],
+                "embeddings": [[0.0] * 1024, [0.0] * 512],
+            }
+
+    with pytest.raises(ValueError, match="dimensional embedding spaces"):
+        collection_embedding_dim(MixedCollection())
+
+
+def test_assert_embedding_dim_consistent_drift_is_refused() -> None:
+    class DriftCollection:
+        def get(self, include=None):
+            return {
+                "ids": ["a"],
+                "metadatas": [{"embedding_dim": 1024}],
+                "embeddings": [[0.0] * 1024],
+            }
+
+    with pytest.raises(ValueError, match="dimensional vectors"):
+        assert_embedding_dim_consistent(DriftCollection(), 512)
+
+
+def test_assert_embedding_dim_consistent_empty_passes() -> None:
+    class EmptyCollection:
+        def get(self, include=None):
+            return {"ids": [], "metadatas": [], "embeddings": []}
+
+    assert_embedding_dim_consistent(EmptyCollection(), 512)
+
+
+def test_assert_embedding_dim_consistent_matching_passes() -> None:
+    class MatchingCollection:
+        def get(self, include=None):
+            return {
+                "ids": ["a"],
+                "metadatas": [{"embedding_dim": 1024}],
+                "embeddings": [[0.0] * 1024],
+            }
+
+    assert_embedding_dim_consistent(MatchingCollection(), 1024)

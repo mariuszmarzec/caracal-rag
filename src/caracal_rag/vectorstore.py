@@ -41,6 +41,7 @@ def upsert_chunks(
     embedding_model: str,
     ids: list[str] | None = None,
     staging: bool = False,
+    embedding_dim: int | None = None,
 ) -> None:
     """Insert or update chunk vectors.
 
@@ -67,6 +68,7 @@ def upsert_chunks(
                 "content_hash": chunk.content_hash,
                 "chunk_index": chunk.chunk_index,
                 "embedding_model": embedding_model,
+                "embedding_dim": embedding_dim,
                 "caracal_staging": staging,
             }
         )
@@ -217,6 +219,88 @@ def assert_embedding_model_consistent(collection, model: str) -> None:
         f"but the configuration requests model {model!r}. Mixing embedding spaces "
         "produces meaningless search results. Rebuild the index with the current "
         "model or point the configuration at a separate collection."
+    )
+
+
+def collection_embedding_dim(collection) -> int | None:
+    """Return the dimension of the vectors stored in the collection.
+
+    The dimension is read from the committed chunk metadata first (the fast
+    path, written by every upsert since dimension tracking existed). When no
+    committed row carries it -- a legacy collection built before dimension
+    tracking -- the stored vectors themselves are inspected as a fallback so
+    the dimension can still be derived without re-embedding.
+
+    Returns ``None`` when the collection holds no committed vectors at all
+    (an empty or staging-only collection has no recorded embedding space).
+
+    Raises ``ValueError`` when committed rows disagree on dimension, i.e. the
+    collection holds vectors from two different embedding spaces. Such a
+    mixed collection is unsafe to index or search against and must be rebuilt.
+    """
+    existing = collection.get(include=["metadatas", "embeddings"])
+    metadatas = existing.get("metadatas") or []
+    embeddings = existing.get("embeddings") or []
+
+    committed: list[dict] = []
+    for metadata, vector in zip(metadatas, embeddings):
+        if not (metadata or {}).get("caracal_staging", False):
+            committed.append({"metadata": metadata or {}, "vector": vector})
+
+    if not committed:
+        return None
+
+    dims: set[int] = set()
+    for record in committed:
+        dim = (record["metadata"] or {}).get("embedding_dim")
+        if dim is None:
+            vector = record["vector"]
+            if vector is None:
+                raise ValueError(
+                    "Collection holds committed vectors with no embedding_dim "
+                    "metadata and no retrievable vector to derive it from; the "
+                    "embedding space is unknown. Rebuild the index with the "
+                    "current model or point the configuration at a separate "
+                    "collection."
+                )
+            dim = len(vector)
+        if not isinstance(dim, int) or dim <= 0:
+            raise ValueError(
+                "Collection holds committed vectors with an invalid "
+                f"embedding_dim {dim!r}; the embedding space is unknown. Rebuild "
+                "the index with the current model or point the configuration at "
+                "a separate collection."
+            )
+        dims.add(dim)
+    if len(dims) > 1:
+        raise ValueError(
+            f"Collection holds committed vectors from {sorted(dims)!r}-"
+            "dimensional embedding spaces. Mixing dimensions produces "
+            "meaningless search results. Rebuild the index with the current "
+            "model or point the configuration at a separate collection."
+        )
+    return next(iter(dims))
+
+
+def assert_embedding_dim_consistent(collection, observed_dim: int) -> None:
+    """Raise ``ValueError`` when the stored vectors disagree with the live probe.
+
+    The configured model is probed once and the resulting dimension is compared
+    against the collection's stored dimension. An empty collection has no
+    stored vectors yet, so there is nothing to mix and the first indexing run
+    establishes the dimension invariant.
+    """
+    stored = collection_embedding_dim(collection)
+    if stored is None:
+        return
+    if stored == observed_dim:
+        return
+    raise ValueError(
+        f"Collection vectors are {stored}-dimensional but the configured "
+        f"embedding model produces {observed_dim}-dimensional vectors. Mixing "
+        "embedding spaces produces meaningless search results. Rebuild the "
+        "index with the current model or point the configuration at a separate "
+        "collection."
     )
 
 

@@ -10,6 +10,7 @@ from caracal_rag.config import AppConfig
 from caracal_rag.embeddings import embed_texts
 from caracal_rag.vectorstore import (
     _chroma_client,
+    assert_embedding_dim_consistent,
     assert_embedding_model_consistent,
     ensure_collection,
     search_chunks,
@@ -80,6 +81,11 @@ class CaracalMcpServer:
             api_key=self.config.embedding.api_key,
             model=self.embedding_model,
         )[0]
+        # The query vector's dimension is checked against the stored vectors too:
+        # two models that happen to agree on family but differ in dimensionality
+        # still produce incompatible spaces, and similarity scores across them
+        # are meaningless.
+        assert_embedding_dim_consistent(self.collection, len(embedding))
         response = search_chunks(self.collection, embedding, top_k=top_k)
         return self._parse_results(response)
 

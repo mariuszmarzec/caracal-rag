@@ -7,6 +7,7 @@ they run without network access, exercising the success and failure paths.
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -36,7 +37,7 @@ litellm_stub.api_base = None
 litellm_stub.api_key = None
 sys.modules["litellm"] = litellm_stub
 
-from caracal_rag.cli import build_parser, run_check, run_setup  # noqa: E402
+from caracal_rag.cli import build_parser, run_check, run_index, run_setup  # noqa: E402
 from caracal_rag.config import ConfigError  # noqa: E402
 
 
@@ -92,8 +93,8 @@ def test_check_validates_connectivity(
         lambda *args, **kwargs: _FakeChromaClient(heartbeat=1),
     )
     monkeypatch.setattr(
-        "caracal_rag.cli.embed_texts",
-        lambda texts, api_base, api_key=None, model=None: [[0.1, 0.2, 0.3]],
+        "caracal_rag.cli.probe_embedding_dim",
+        lambda api_base, model, api_key=None: 3,
     )
 
     run_check(config_path=str(example_config))
@@ -139,8 +140,8 @@ def test_check_refuses_mismatched_live_collection(
         lambda *args, **kwargs: _MismatchedChromaClient(),
     )
     monkeypatch.setattr(
-        "caracal_rag.cli.embed_texts",
-        lambda texts, api_base, api_key=None, model=None: [[0.1, 0.2, 0.3]],
+        "caracal_rag.cli.probe_embedding_dim",
+        lambda api_base, model, api_key=None: 3,
     )
 
     with pytest.raises(SystemExit) as excinfo:
@@ -176,8 +177,8 @@ def test_check_refuses_legacy_live_collection(
         lambda *args, **kwargs: _LegacyChromaClient(),
     )
     monkeypatch.setattr(
-        "caracal_rag.cli.embed_texts",
-        lambda texts, api_base, api_key=None, model=None: [[0.1, 0.2, 0.3]],
+        "caracal_rag.cli.probe_embedding_dim",
+        lambda api_base, model, api_key=None: 3,
     )
 
     with pytest.raises(SystemExit) as excinfo:
@@ -194,8 +195,8 @@ def test_check_raises_on_chroma_failure(
         lambda *args, **kwargs: _FakeChromaClient(heartbeat=0),
     )
     monkeypatch.setattr(
-        "caracal_rag.cli.embed_texts",
-        lambda texts, api_base, api_key=None, model=None: [[0.1, 0.2]],
+        "caracal_rag.cli.probe_embedding_dim",
+        lambda api_base, model, api_key=None: 3,
     )
 
     with pytest.raises(SystemExit) as excinfo:
@@ -212,10 +213,10 @@ def test_check_raises_on_embedding_failure(
         lambda *args, **kwargs: _FakeChromaClient(heartbeat=1),
     )
 
-    def failing_embed(*args, **kwargs):
+    def failing_probe(*args, **kwargs):
         raise RuntimeError("LiteLLM unreachable")
 
-    monkeypatch.setattr("caracal_rag.cli.embed_texts", failing_embed)
+    monkeypatch.setattr("caracal_rag.cli.probe_embedding_dim", failing_probe)
 
     with pytest.raises(SystemExit) as excinfo:
         run_check(config_path=str(example_config))
@@ -328,3 +329,261 @@ def test_setup_does_not_accept_key_as_command_argument() -> None:
     with pytest.raises(SystemExit) as excinfo:
         parser.parse_args(["setup", "--api-key", "should-not-be-a-cli-argument"])
     assert excinfo.value.code == 2
+
+
+def _write_manifest(home: Path, *, model: str, dim: int | None) -> Path:
+    index_dir = home / "index"
+    index_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = index_dir / "manifest.json"
+    payload = {
+        "collection": "test",
+        "embedding_model": model,
+        "embedding_api_base": "http://localhost:3001/v1",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        "document_count": 1,
+    }
+    if dim is not None:
+        payload["embedding_dim"] = dim
+    manifest_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    return manifest_path
+
+
+def test_check_refuses_dimension_drift_against_manifest(
+    monkeypatch: pytest.MonkeyPatch, example_config: Path, tmp_path: Path
+) -> None:
+    """A manifest recording a different dimension must fail ``check``.
+
+    The configured model was probed at 512 dims but the manifest records the
+    index was built with 1024-dim vectors: the stored vectors live in a
+    different embedding space and must be refused with rebuild guidance, even
+    when the collection model tag agrees with the configured model.
+    """
+    home = tmp_path / "caracal-home"
+    home.mkdir()
+    _write_manifest(home, model="bge-m3", dim=1024)
+    monkeypatch.setenv("CARACAL_HOME", str(home))
+
+    class _SameModelCollection:
+        def get(self, include=None):
+            return {
+                "ids": ["a"],
+                "metadatas": [{"embedding_model": "bge-m3"}],
+            }
+
+        def query(self, **kwargs):
+            return {"ids": [["a"]], "metadatas": [[{"embedding_model": "bge-m3"}]]}
+
+    class _ChromaClient:
+        def heartbeat(self) -> int:
+            return 1
+
+        def get_or_create_collection(self, name: str) -> _SameModelCollection:
+            return _SameModelCollection()
+
+    monkeypatch.setattr(
+        "caracal_rag.cli._chroma_client",
+        lambda *args, **kwargs: _ChromaClient(),
+    )
+    monkeypatch.setattr(
+        "caracal_rag.cli.probe_embedding_dim",
+        lambda api_base, model, api_key=None: 512,
+    )
+
+    manifest_path = home / "index" / "manifest.json"
+    manifest_before = manifest_path.read_text(encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_check(config_path=str(example_config))
+    assert excinfo.value.code != 0
+
+    # A failed check must not rewrite the manifest.
+    assert manifest_path.read_text(encoding="utf-8") == manifest_before
+
+
+def test_check_refuses_dimension_drift_against_collection(
+    monkeypatch: pytest.MonkeyPatch, example_config: Path, tmp_path: Path
+) -> None:
+    """A live collection with a different stored dimension must fail ``check``.
+
+    The manifest may be absent or agree on model, but the *collection* itself
+    is inspected: committed vectors tagged with a different ``embedding_dim``
+    must be refused with rebuild guidance.
+    """
+    home = tmp_path / "caracal-home"
+    home.mkdir()
+    monkeypatch.setenv("CARACAL_HOME", str(home))
+
+    class _DimDriftCollection:
+        def get(self, include=None):
+            return {
+                "ids": ["a"],
+                "metadatas": [{"embedding_model": "bge-m3", "embedding_dim": 1024}],
+                "embeddings": [[0.1] * 1024],
+            }
+
+        def query(self, **kwargs):
+            return {
+                "ids": [["a"]],
+                "metadatas": [[{"embedding_model": "bge-m3", "embedding_dim": 1024}]],
+            }
+
+    class _ChromaClient:
+        def heartbeat(self) -> int:
+            return 1
+
+        def get_or_create_collection(self, name: str) -> _DimDriftCollection:
+            return _DimDriftCollection()
+
+    monkeypatch.setattr(
+        "caracal_rag.cli._chroma_client",
+        lambda *args, **kwargs: _ChromaClient(),
+    )
+    monkeypatch.setattr(
+        "caracal_rag.cli.probe_embedding_dim",
+        lambda api_base, model, api_key=None: 512,
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_check(config_path=str(example_config))
+    assert excinfo.value.code != 0
+
+
+def test_index_refuses_dimension_drift_before_writing(
+    monkeypatch: pytest.MonkeyPatch, example_config: Path, tmp_path: Path
+) -> None:
+    """A failed indexing run (dimension drift) must not update the manifest.
+
+    The manifest records the index was built with 1024-dim vectors while the
+    live probe returns 512 dims. ``index`` must refuse to run and must leave
+    the manifest untouched.
+    """
+    home = tmp_path / "caracal-home"
+    home.mkdir()
+    manifest_path = _write_manifest(home, model="bge-m3", dim=1024)
+    monkeypatch.setenv("CARACAL_HOME", str(home))
+
+    class _DriftCollection:
+        def get(self, include=None):
+            return {
+                "ids": ["a"],
+                "metadatas": [{"embedding_model": "bge-m3", "embedding_dim": 1024}],
+                "embeddings": [[0.1] * 1024],
+            }
+
+    class _ChromaClient:
+        def heartbeat(self) -> int:
+            return 1
+
+        def get_or_create_collection(self, name: str) -> _DriftCollection:
+            return _DriftCollection()
+
+    monkeypatch.setattr(
+        "caracal_rag.cli._chroma_client",
+        lambda *args, **kwargs: _ChromaClient(),
+    )
+    monkeypatch.setattr(
+        "caracal_rag.cli.probe_embedding_dim",
+        lambda api_base, model, api_key=None: 512,
+    )
+
+    with pytest.raises(ConfigError, match="dimensional"):
+        run_index(source=None, config_path=str(example_config))
+
+    manifest_before = manifest_path.read_text(encoding="utf-8")
+    assert '"embedding_dim": 1024' in manifest_before
+
+
+def test_index_success_writes_dimension_to_manifest(
+    monkeypatch: pytest.MonkeyPatch, example_config: Path, tmp_path: Path
+) -> None:
+    """A successful indexing run persists the probed dimension in the manifest.
+
+    The manifest is only written after the indexer completes successfully, so
+    the dimension recorded is the one that actually produced the stored
+    vectors.
+    """
+    home = tmp_path / "caracal-home"
+    home.mkdir()
+    monkeypatch.setenv("CARACAL_HOME", str(home))
+
+    class _FakeCollection:
+        def __init__(self) -> None:
+            self._rows: dict[str, dict] = {}
+
+        def get(self, where=None, include=None):
+            result: dict = {"ids": list(self._rows.keys())}
+            if include and "metadatas" in include:
+                result["metadatas"] = [
+                    record.get("metadata", record) for record in self._rows.values()
+                ]
+            if include and "documents" in include:
+                result["documents"] = [
+                    record.get("text", "") for record in self._rows.values()
+                ]
+            if include and "embeddings" in include:
+                result["embeddings"] = [
+                    record.get("embedding") for record in self._rows.values()
+                ]
+            return result
+
+        def upsert(self, ids, documents, embeddings, metadatas):
+            for cid, text, emb, meta in zip(ids, documents, embeddings, metadatas):
+                self._rows[cid] = {"text": text, "embedding": emb, "metadata": meta, **meta}
+
+        def delete(self, ids):
+            for cid in ids:
+                self._rows.pop(cid, None)
+
+        def query(self, **kwargs):
+            return {"ids": [], "documents": [], "metadatas": [], "distances": []}
+
+    collection = _FakeCollection()
+
+    class _ChromaClient:
+        def heartbeat(self) -> int:
+            return 1
+
+        def get_or_create_collection(self, name: str) -> _FakeCollection:
+            return collection
+
+    monkeypatch.setattr(
+        "caracal_rag.cli._chroma_client",
+        lambda *args, **kwargs: _ChromaClient(),
+    )
+    monkeypatch.setattr(
+        "caracal_rag.cli.probe_embedding_dim",
+        lambda api_base, model, api_key=None: 7,
+    )
+
+    # Stub out the indexer so run_index runs end-to-end without a real source.
+    class _FakeIndexer:
+        def __init__(self, config, source_filter=None, embedding_dim=None):
+            self.config = config
+            self.collection = collection
+            self.embedding_dim = embedding_dim
+
+        def run(self):
+            collection.upsert(
+                ids=["chunk-1"],
+                documents=["hello"],
+                embeddings=[[0.1] * 7],
+                metadatas=[
+                    {
+                        "url": "https://example.com/a.md",
+                        "embedding_model": "bge-m3",
+                        "embedding_dim": self.embedding_dim,
+                        "caracal_staging": False,
+                    }
+                ],
+            )
+
+    monkeypatch.setattr("caracal_rag.cli.Indexer", _FakeIndexer)
+
+    run_index(source=None, config_path=str(example_config))
+
+    manifest_path = home / "index" / "manifest.json"
+    assert manifest_path.is_file(), "manifest was not written after successful indexing"
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert data["embedding_dim"] == 7
+    assert data["embedding_model"] == "bge-m3"
+    assert data["document_count"] == 1

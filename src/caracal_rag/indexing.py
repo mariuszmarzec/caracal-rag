@@ -14,6 +14,7 @@ from caracal_rag.sources import (
 from caracal_rag.vectorstore import (
     _chroma_client,
     _chunk_id,
+    assert_embedding_dim_consistent,
     assert_embedding_model_consistent,
     delete_document_chunks,
     delete_missing_documents,
@@ -24,10 +25,21 @@ from caracal_rag.vectorstore import (
 
 
 class Indexer:
-    def __init__(self, config: AppConfig, source_filter: str | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        source_filter: str | None = None,
+        embedding_dim: int | None = None,
+    ) -> None:
         self.config = config
         self.source_filter = source_filter
         self.embedding_model = config.embedding.model
+        #: Dimensionality of the configured embedding model, probed before the
+        #: run. ``None`` when the caller did not supply one; the first document
+        #: actually embedded establishes it, and any later document that
+        #: disagrees is refused so a mid-run dimension drift can never silently
+        #: mix vectors from two embedding spaces.
+        self.embedding_dim = embedding_dim
         self.client = _chroma_client(
             host=config.chroma.host,
             port=config.chroma.port,
@@ -57,6 +69,12 @@ class Indexer:
         # embedding model. Mixing embedding spaces produces meaningless search
         # results, so refuse to index rather than silently mixing them.
         assert_embedding_model_consistent(self.collection, self.embedding_model)
+        # The dimension is validated the same way: a collection holding vectors
+        # from a differently dimensional model must never be mixed with query
+        # vectors from the configured model, even when the family happens to
+        # agree.
+        if self.embedding_dim is not None:
+            assert_embedding_dim_consistent(self.collection, self.embedding_dim)
         try:
             documents = list(self._load_documents())
         except SourceLoadError as exc:
@@ -117,6 +135,24 @@ class Indexer:
             model=self.embedding_model,
         )
 
+        # The dimension is established on the first successful embedding of the
+        # run and validated on every later document. A mid-run dimension drift
+        # (the configured model silently producing a different family) must
+        # never be allowed to mix vectors from two embedding spaces, so refuse
+        # rather than upsert the drifted document.
+        observed_dim = len(embeddings[0]) if embeddings and embeddings[0] else None
+        if observed_dim is not None:
+            if self.embedding_dim is None:
+                self.embedding_dim = observed_dim
+            elif self.embedding_dim != observed_dim:
+                raise RuntimeError(
+                    f"Embedding dimension changed mid-run: the run started with "
+                    f"{self.embedding_dim}-dimensional vectors but document "
+                    f"{document.url!r} produced {observed_dim}-dimensional ones. "
+                    "Mixing embedding spaces produces meaningless search results; "
+                    "aborting the run."
+                )
+
         final_ids = [_chunk_id_for(chunk) for chunk in chunks]
         # Stage the replacement under temporary ids. Staging ids are random uuid4
         # values that do not collide with any existing chunk id, so a partial
@@ -133,6 +169,7 @@ class Indexer:
                 embedding_model=self.embedding_model,
                 ids=staging_ids,
                 staging=True,
+                embedding_dim=self.embedding_dim,
             )
         except Exception as exc:
             # Roll back the staged ids a partial failure may have written: they
@@ -228,6 +265,7 @@ class Indexer:
                 embeddings,
                 embedding_model=self.embedding_model,
                 ids=final_ids,
+                embedding_dim=self.embedding_dim,
             )
         except Exception:
             try:
@@ -237,6 +275,7 @@ class Indexer:
                     embeddings,
                     embedding_model=self.embedding_model,
                     ids=final_ids,
+                    embedding_dim=self.embedding_dim,
                 )
             except Exception as promotion_exc:
                 try:
@@ -294,6 +333,7 @@ class Indexer:
                 "content_hash": chunk.content_hash,
                 "chunk_index": chunk.chunk_index,
                 "embedding_model": self.embedding_model,
+                "embedding_dim": self.embedding_dim,
                 "caracal_staging": False,
             }
 
@@ -328,6 +368,11 @@ class Indexer:
             if metadata.get("url") != chunk.url or metadata.get("chunk_index") != chunk.chunk_index:
                 return False
             if metadata.get("embedding_model") != self.embedding_model:
+                return False
+            if (
+                self.embedding_dim is not None
+                and metadata.get("embedding_dim") != self.embedding_dim
+            ):
                 return False
         return True
 

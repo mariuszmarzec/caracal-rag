@@ -85,6 +85,30 @@ def redact_secret(text: str, secret: str | None) -> str:
     return text.replace(secret, "***")
 
 
+def probe_embedding_dim(
+    api_base: str,
+    model: str,
+    api_key: str | None = None,
+) -> int:
+    """Return the dimensionality of the configured embedding model.
+
+    A single embedding call is issued with the configured model and the length
+    of the returned vector is reported. The dimension is the *only* thing that
+    matters here: two models that produce the same dimensionality are still
+    different embedding spaces and must never be mixed, so this probe is used
+    to validate the live index, not to identify the model.
+    """
+    vectors = embed_texts(
+        ["caracal-rag check"], api_base=api_base, model=model, api_key=api_key
+    )
+    if not vectors or not vectors[0]:
+        raise RuntimeError(
+            "Embedding endpoint returned an empty vector; cannot determine the "
+            "embedding dimension."
+        )
+    return len(vectors[0])
+
+
 def validate_embedding_endpoint(
     api_base: str,
     model: str,
@@ -105,7 +129,7 @@ def validate_embedding_endpoint(
             "checking what is enabled under FreeLLMAPI Models -> Embeddings."
         )
     try:
-        embed_texts(["caracal-rag check"], api_base=api_base, model=model, api_key=api_key)
+        probe_embedding_dim(api_base=api_base, model=model, api_key=api_key)
     except Exception as exc:  # noqa: BLE001 - surface any connectivity/model failure
         message = redact_secret(str(exc), api_key)
         raise ConfigError(
