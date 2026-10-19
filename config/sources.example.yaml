@@ -1,5 +1,5 @@
 embedding:
-  model: text-embedding-3-small
+  model: bge-m3
   api_base: http://localhost:3001/v1
 
 chroma:
@@ -7,13 +7,9 @@ chroma:
   port: 3400
   collection: caracal-base
 
+# Relative local-source paths are resolved against this config file's directory.
+# To add local files, use an absolute path or a path relative to ~/.caracal/config.
 sources:
-  # Add local knowledge source
-  - name: example_knowledge_funny_jokes
-    type: local
-    path: ./example_knowledge_funny_jokes
-
-  # Or fetch an entire docs directory recursively (github_md_doc_dir)
   - name: fiteo-docs
     type: github_md_doc_dir
     repo: mariuszmarzec/fiteo

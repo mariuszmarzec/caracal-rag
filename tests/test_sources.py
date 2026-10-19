@@ -18,6 +18,7 @@ from caracal_rag.sources import (
     _github_list_md_files,
     github_md_doc_dir_documents,
     infer_type,
+    load_documents_from_config,
     load_documents_from_source,
 )
 
@@ -279,3 +280,35 @@ def test_load_documents_from_source_raises_on_fetch_failure():
 
     assert len(exc_info.value.documents) == 1
     assert exc_info.value.documents[0].url == "https://example.com/ok.md"
+
+
+
+def test_local_source_paths_are_relative_to_active_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config" / "sources.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "embedding:\n"
+        "  model: bge-m3\n"
+        "  api_base: http://localhost:3001/v1\n"
+        "chroma:\n"
+        "  host: localhost\n"
+        "  port: 8000\n"
+        "  collection: test\n"
+        "sources:\n"
+        "  - name: local-docs\n"
+        "    type: local\n"
+        "    path: ../knowledge\n",
+        encoding="utf-8",
+    )
+    observed_paths: list[str] = []
+
+    def capture_source(source):
+        observed_paths.append(source.path)
+        return iter(())
+
+    monkeypatch.setattr("caracal_rag.sources.load_documents_from_source", capture_source)
+
+    assert list(load_documents_from_config(str(config_path))) == []
+    assert observed_paths == [str((config_path.parent / "../knowledge").resolve())]

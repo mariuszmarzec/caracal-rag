@@ -45,8 +45,9 @@ from caracal_rag.sources import Document  # noqa: E402
 def example_config(tmp_path: Path) -> Path:
     data = {
         "embedding": {
-            "model": "text-embedding-3-small",
+            "model": "bge-m3",
             "api_base": "http://localhost:3001/v1",
+            "api_key": "test-key",
         },
         "chroma": {"host": "localhost", "port": 8000, "collection": "test"},
         "sources": [
@@ -68,7 +69,7 @@ def test_config_parsing(example_config: Path) -> None:
     assert config.sources[0].name == "api-docs"
     assert config.chroma.collection == "test"
     assert config.embedding.api_base == "http://localhost:3001/v1"
-    assert config.embedding.model == "text-embedding-3-small"
+    assert config.embedding.model == "bge-m3"
 
 
 def test_infer_type() -> None:
@@ -143,7 +144,7 @@ def test_indexing_idempotency(monkeypatch: pytest.MonkeyPatch) -> None:
             # and embedding as well as metadata, while metadata-only checks omit them.
             metadata = {
                 "url": "https://example.com/login.md",
-                "embedding_model": "text-embedding-3-small",
+                "embedding_model": "bge-m3",
                 "content_hash": Document.hash("# Login"),
                 "chunk_index": 0,
                 "caracal_staging": False,
@@ -190,6 +191,7 @@ def test_indexing_idempotency(monkeypatch: pytest.MonkeyPatch) -> None:
         sources=[SourceConfig(name="api", type="markdown", urls=["https://example.com/login.md"])],
         embedding=AppConfig.from_yaml("config/sources.example.yaml").embedding,
         chroma=AppConfig.from_yaml("config/sources.example.yaml").chroma,
+        config_path=Path("config/sources.example.yaml"),
     )
     indexer = Indexer(config=config)
     indexer.run()
