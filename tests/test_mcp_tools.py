@@ -123,9 +123,8 @@ def _make_server(monkeypatch: pytest.MonkeyPatch) -> CaracalMcpServer:
     monkeypatch.setattr("caracal_rag.mcp.embed_texts", lambda texts, **kwargs: [[0.1, 0.2]])
     monkeypatch.setattr("caracal_rag.mcp.Server", FakeServer)
     config = AppConfig.from_yaml("config/sources.example.yaml")
-    # The protected interface requires a valid token; tests supply one directly
-    # on the config object rather than through the environment/secrets layer.
-    config.access_token.token = "test-token"
+    # The raw token is no longer a tool argument: it is supplied out-of-band
+    # through the HTTP transport, so the low-level handlers never see it.
     return CaracalMcpServer(config)
 
 

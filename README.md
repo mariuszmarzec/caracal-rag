@@ -64,12 +64,24 @@ The active configuration lives under `~/.caracal`:
 Secrets can also be supplied via environment variables, which take precedence over `secrets.yaml`:
 - `CARACAL_EMBEDDING_API_KEY` — the FreeLLMAPI API key.
 - `CARACAL_ACCESS_TOKEN` — the access token that protects the MCP interface.
+- `CARACAL_MCP_TRANSPORT` — `stdio` (default) or `http` transport for the MCP server.
+- `CARACAL_MCP_HOST`, `CARACAL_MCP_PORT`, `CARACAL_MCP_PATH` — bind address for the `http` transport.
 
 ### Access Token Protection
 
-The MCP interface is protected by an access token. Every tool call — including calls for tools that do not exist — must present a valid `access_token` argument, and there is no silent unauthenticated fallback. The policy is configured in `sources.yaml`:
+The MCP interface is protected by an access token. The raw token is **never** a tool argument, tool schema field, or tool result: it is supplied out-of-band through the transport, so it cannot leak into a model-visible surface, LLM transcript, or shell history.
+
+- **stdio transport** (the default): a local, unauthenticated interface. It is intended for a trusted host where the agent process itself is the only caller. No auth channel exists on stdio, so the token is not presented at all.
+- **http transport**: the interface is exposed behind the MCP SDK's `BearerAuthMiddleware`, which demands an `Authorization: Bearer <token>` header on every request. Missing or invalid tokens are rejected with `401`; valid tokens authenticate the session.
+
+The policy is configured in `sources.yaml`:
 
 ```yaml
+mcp:
+  transport: http        # or 'stdio'
+  host: 127.0.0.1        # http bind host
+  port: 8000             # http bind port
+  path: /mcp             # http mount path
 access_token:
   enabled: true   # set to false only to explicitly disable protection
 ```
@@ -113,13 +125,20 @@ caracal-rag index --source fiteo-docs
 
 ## Running the RAG Server (MCP)
 
-Start the persistent stdio MCP server:
+Start the persistent stdio MCP server (local, unauthenticated interface):
 
 ```bash
 caracal-rag mcp
 ```
 
-The MCP server exposes the `search_api(query, top_k=5, access_token)` tool to connected agents (OpenCode, OpenClaw, etc.). Every call must present the `access_token` configured under `~/.caracal`; calls with a missing, invalid or short token are rejected, and unknown tools are rejected too.
+Or expose the interface behind an out-of-band Bearer access-token channel:
+
+```bash
+caracal-rag mcp --transport http --host 127.0.0.1 --port 8000 --path /mcp
+# or set CARACAL_MCP_TRANSPORT=http and the bind env vars
+```
+
+The MCP server exposes the `search_api(query, top_k=5)` tool to connected agents (OpenCode, OpenClaw, etc.). The raw access token is never a tool argument: on the `http` transport every request must present a valid `Authorization: Bearer <token>` header, and missing or invalid tokens are rejected with `401`. On the `stdio` transport the interface is local and unauthenticated by design.
 
 ## Indexing Consistency & Manifest Validation
 

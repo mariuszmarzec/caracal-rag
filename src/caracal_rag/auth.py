@@ -10,11 +10,18 @@ The token itself is never compared into logs, diagnostics, exceptions, or
 tool-argument echoes. :func:`authenticate` returns a plain ``bool`` and raises
 :class:`caracal_rag.config.ConfigError` on failure, so callers can surface an
 actionable message without ever handling the raw secret.
+
+The HTTP transport boundary uses :class:`SimpleTokenVerifier`, which plugs
+into the MCP SDK's ``TokenVerifier`` protocol so the server can demand a
+``Authorization: Bearer <token>`` header on every request without the secret
+ever appearing in a model-visible tool schema, tool argument, tool result, or
+LLM-facing transcript.
 """
 
 from __future__ import annotations
 
 import secrets
+from typing import Any
 
 from caracal_rag.config import AccessTokenConfig, ConfigError
 
@@ -108,3 +115,43 @@ def redact_token(text: str, token: str | None) -> str:
     if not token:
         return text
     return text.replace(token, "***")
+
+
+class SimpleTokenVerifier:
+    """Token verifier for the MCP SDK's HTTP auth boundary.
+
+    The MCP SDK validates bearer tokens through the
+    :class:`mcp.server.auth.provider.TokenVerifier` protocol. This adapter
+    wraps the configured access-token policy so the HTTP transport can demand
+    ``Authorization: Bearer <token>`` on every request. The presented token is
+    consumed from the HTTP request header, never from a model-generated tool
+    argument, so the secret never reaches the model-visible tool schema, tool
+    arguments, tool results, or LLM-facing transcript.
+
+    The verifier is intentionally not constant-time on the *absence* of a
+    token: a missing header is a cheap reject that does not touch the secret.
+    When a token is actually presented, comparison still goes through
+    :func:`authenticate`, which uses ``secrets.compare_digest``.
+    """
+
+    def __init__(self, access_token: AccessTokenConfig) -> None:
+        self.access_token = access_token
+
+    async def verify_token(self, token: str) -> Any:
+        """Return an :class:`AccessToken` when ``token`` is valid, else ``None``.
+
+        Returning ``None`` tells the SDK's ``BearerAuthBackend`` that the
+        request is unauthenticated, which the surrounding
+        ``RequireAuthMiddleware`` turns into a ``401``. The configured token is
+        never echoed in the returned object or in any error.
+        """
+        # Local import: the MCP SDK is an optional dependency at the auth
+        # module level, and this verifier is only used by the HTTP transport
+        # path that imports it explicitly.
+        from mcp.server.auth.provider import AccessToken
+
+        try:
+            authenticate(self.access_token, token)
+        except AuthenticationError:
+            return None
+        return AccessToken(token=token, client_id="caracal-rag", scopes=[])

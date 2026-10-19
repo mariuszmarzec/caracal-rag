@@ -12,6 +12,16 @@ chroma:
 # (access_token.token, mode 0600) or in the CARACAL_ACCESS_TOKEN environment
 # variable. `enabled` defaults to true, so every protected path requires a
 # valid token; there is no silent unauthenticated fallback.
+#
+# The raw token is never a tool argument: it is supplied out-of-band through
+# the transport. `mcp.transport: http` exposes the interface behind the SDK's
+# Bearer auth middleware (Authorization: Bearer <token>); `stdio` (the default)
+# is a local, unauthenticated interface for a trusted host.
+mcp:
+  transport: stdio
+  host: 127.0.0.1
+  port: 8000
+  path: /mcp
 access_token:
   enabled: true
 

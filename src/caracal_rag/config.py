@@ -17,7 +17,31 @@ EMBEDDING_API_KEY_ENV = "CARACAL_EMBEDDING_API_KEY"
 #: secret through a tool-argument field.
 ACCESS_TOKEN_ENV = "CARACAL_ACCESS_TOKEN"
 
+#: Environment variable selecting the MCP server transport. The default is
+#: ``stdio`` (the transport that needs no port); ``http`` runs the SDK's
+#: StreamableHTTP server behind the SDK's Bearer-auth middleware, which is the
+#: only transport that can demand the token out-of-band from a request header.
+MCP_TRANSPORT_ENV = "CARACAL_MCP_TRANSPORT"
+#: Environment variable for the HTTP MCP server bind host.
+MCP_HOST_ENV = "CARACAL_MCP_HOST"
+#: Environment variable for the HTTP MCP server bind port.
+MCP_PORT_ENV = "CARACAL_MCP_PORT"
+#: Environment variable for the HTTP MCP server path.
+MCP_PATH_ENV = "CARACAL_MCP_PATH"
+
 DEFAULT_EMBEDDING_API_BASE = "http://localhost:3001/v1"
+
+#: Default MCP transport: ``stdio`` is the zero-config local mode, but it has no
+#: out-of-band caller-authentication channel, so a token check on stdio can
+#: only ever be a tool-argument check (which leaks the secret into the
+#: model-visible transcript). ``http`` is the authenticated interface.
+DEFAULT_MCP_TRANSPORT = "stdio"
+#: Default bind host for the HTTP MCP server.
+DEFAULT_MCP_HOST = "127.0.0.1"
+#: Default bind port for the HTTP MCP server.
+DEFAULT_MCP_PORT = 8000
+#: Default HTTP path for the MCP server.
+DEFAULT_MCP_PATH = "/mcp"
 
 #: Minimum length for a configured access token. A shorter value is refused
 #: during setup and at runtime instead of being silently accepted.
@@ -116,6 +140,8 @@ _CHROMA_FIELDS = {"host", "port", "collection", "ssl"}
 
 #: Fields this version knows how to coerce into ``AccessTokenConfig``.
 _ACCESS_TOKEN_FIELDS = {"enabled", "token"}
+#: Fields this version knows how to coerce into ``McpTransportConfig``.
+_MCP_FIELDS = {"transport", "host", "port", "path"}
 
 
 @dataclass
@@ -158,6 +184,37 @@ def _coerce_source(item: dict[str, Any]) -> SourceConfig:
 
 
 @dataclass
+class McpTransportConfig:
+    """Transport settings for the MCP server.
+
+    ``stdio`` is the zero-config local mode: the SDK streams JSON-RPC over the
+    process' stdin/stdout, which has no out-of-band caller-authentication
+    channel. ``http`` runs the SDK's StreamableHTTP server behind the SDK's
+    Bearer-auth middleware, which is the only transport that can demand the
+    access token from the ``Authorization`` request header instead of a
+    model-generated tool argument.
+    """
+
+    transport: str = field(
+        default_factory=lambda: os.getenv(MCP_TRANSPORT_ENV, DEFAULT_MCP_TRANSPORT)
+    )
+    host: str = field(default_factory=lambda: os.getenv(MCP_HOST_ENV, DEFAULT_MCP_HOST))
+    port: int = field(
+        default_factory=lambda: int(os.getenv(MCP_PORT_ENV, str(DEFAULT_MCP_PORT)))
+    )
+    path: str = field(default_factory=lambda: os.getenv(MCP_PATH_ENV, DEFAULT_MCP_PATH))
+
+    def __post_init__(self) -> None:
+        self.transport = str(self.transport).strip().lower() or DEFAULT_MCP_TRANSPORT
+        if self.transport not in {"stdio", "http"}:
+            raise ConfigError(
+                f"Unknown MCP transport {self.transport!r}. Valid transports are "
+                "'stdio' (default, local) and 'http' (authenticated interface). "
+                f"Set {MCP_TRANSPORT_ENV} or 'mcp.transport' in the active config."
+            )
+
+
+@dataclass
 class AppConfig:
     sources: list[SourceConfig]
     embedding: EmbeddingConfig
@@ -165,6 +222,7 @@ class AppConfig:
     access_token: AccessTokenConfig = field(
         default_factory=AccessTokenConfig
     )
+    mcp: McpTransportConfig = field(default_factory=McpTransportConfig)
     #: Where this configuration was loaded from, when known. Runtime commands
     #: use it to load documents from the *active* configuration instead of a
     #: checkout-relative path.
@@ -227,12 +285,17 @@ class AppConfig:
                 if key in _ACCESS_TOKEN_FIELDS
             }
         )
+        mcp_data = data.get("mcp", {}) or {}
+        mcp = McpTransportConfig(
+            **{key: value for key, value in mcp_data.items() if key in _MCP_FIELDS}
+        )
 
         return cls(
             sources=sources,
             embedding=embedding,
             chroma=chroma,
             access_token=access_token,
+            mcp=mcp,
             config_path=path,
         )
 
@@ -395,6 +458,15 @@ def write_config(config: AppConfig, path: Path) -> None:
             access_token_data.pop("token", None)
             access_token_data["enabled"] = config.access_token.enabled
             data["access_token"] = access_token_data
+        # The MCP transport is a deployment choice (stdio/http), not a secret.
+        mcp_data = data.get("mcp", {}) or {}
+        if isinstance(mcp_data, dict):
+            mcp_data = dict(mcp_data)
+            mcp_data["transport"] = config.mcp.transport
+            mcp_data["host"] = config.mcp.host
+            mcp_data["port"] = config.mcp.port
+            mcp_data["path"] = config.mcp.path
+            data["mcp"] = mcp_data
     else:
         data = {
             "embedding": {
@@ -408,6 +480,12 @@ def write_config(config: AppConfig, path: Path) -> None:
                 "ssl": config.chroma.ssl,
             },
             "access_token": {"enabled": config.access_token.enabled},
+            "mcp": {
+                "transport": config.mcp.transport,
+                "host": config.mcp.host,
+                "port": config.mcp.port,
+                "path": config.mcp.path,
+            },
             "sources": [_source_to_dict(source) for source in config.sources],
         }
     tmp = path.with_suffix(path.suffix + ".tmp")

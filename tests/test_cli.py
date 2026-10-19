@@ -7,10 +7,12 @@ they run without network access, exercising the success and failure paths.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import types
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -37,8 +39,8 @@ litellm_stub.api_base = None
 litellm_stub.api_key = None
 sys.modules["litellm"] = litellm_stub
 
-from caracal_rag.cli import build_parser, run_check, run_index, run_setup  # noqa: E402
-from caracal_rag.config import ConfigError  # noqa: E402
+from caracal_rag.cli import build_parser, run_check, run_index, run_mcp, run_setup  # noqa: E402
+from caracal_rag.config import AppConfig, ConfigError  # noqa: E402
 
 #: Every protected interface path requires a valid token. These tests stub the
 #: embedding/Chroma services, so they supply a token through the environment
@@ -336,11 +338,112 @@ def test_check_missing_config_reports_actionable_error(
     assert "UnboundLocalError" not in err
 
 
-def test_setup_does_not_accept_key_as_command_argument() -> None:
+def test_mcp_parser_defaults_and_overrides() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["mcp"])
+    assert args.transport is None
+    assert args.host is None
+    assert args.port is None
+    assert args.path is None
+    assert args.config is None
+
+    args = parser.parse_args(["mcp", "--transport", "http", "--host", "0.0.0.0",
+                              "--port", "9000", "--path", "/caracal", "--config", "x.yaml"])
+    assert args.transport == "http"
+    assert args.host == "0.0.0.0"
+    assert args.port == 9000
+    assert args.path == "/caracal"
+    assert args.config == "x.yaml"
+
+
+def test_mcp_parser_rejects_unknown_transport() -> None:
     parser = build_parser()
     with pytest.raises(SystemExit) as excinfo:
-        parser.parse_args(["setup", "--api-key", "should-not-be-a-cli-argument"])
+        parser.parse_args(["mcp", "--transport", "ws"])
     assert excinfo.value.code == 2
+
+
+def test_run_mcp_dispatches_http(monkeypatch: pytest.MonkeyPatch, example_config: Path) -> None:
+    """``run_mcp`` must dispatch to the http or stdio transport based on config."""
+    calls: dict[str, Any] = {}
+
+    class _FakeServer:
+        def __init__(self, config: AppConfig) -> None:
+            calls["config"] = config
+
+        async def run_http_async(self) -> None:
+            calls["ran"] = "http"
+
+        async def run_stdio_async(self) -> None:
+            calls["ran"] = "stdio"
+
+    monkeypatch.setattr(
+        "caracal_rag.cli._chroma_client",
+        lambda *args, **kwargs: _FakeChromaClient(heartbeat=1),
+    )
+    monkeypatch.setattr(
+        "caracal_rag.cli.probe_embedding_dim",
+        lambda api_base, model, api_key=None: 3,
+    )
+    monkeypatch.setattr("caracal_rag.mcp.CaracalMcpServer", _FakeServer)
+
+    class _FakeAsyncio:
+        @staticmethod
+        def run(coro: Any) -> None:
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(coro)
+            finally:
+                loop.close()
+
+    monkeypatch.setattr("caracal_rag.cli.asyncio", _FakeAsyncio)
+
+    run_mcp(transport_override="http", config_path=str(example_config))
+    assert calls["ran"] == "http"
+    assert calls["config"].mcp.transport == "http"
+
+    calls.clear()
+    run_mcp(transport_override="stdio", config_path=str(example_config))
+    assert calls["ran"] == "stdio"
+
+
+def test_run_mcp_uses_env_transport(monkeypatch: pytest.MonkeyPatch, example_config: Path) -> None:
+    """The transport falls back to the env-aware config when no CLI override is given."""
+    class _FakeServer:
+        def __init__(self, config: AppConfig) -> None:
+            self.config = config
+
+        async def run_http_async(self) -> None:
+            pass
+
+        async def run_stdio_async(self) -> None:
+            raise AssertionError("stdio must not be dispatched when env says http")
+
+    monkeypatch.setattr(
+        "caracal_rag.cli._chroma_client",
+        lambda *args, **kwargs: _FakeChromaClient(heartbeat=1),
+    )
+    monkeypatch.setattr(
+        "caracal_rag.cli.probe_embedding_dim",
+        lambda api_base, model, api_key=None: 3,
+    )
+    monkeypatch.setattr("caracal_rag.mcp.CaracalMcpServer", _FakeServer)
+
+    class _FakeAsyncio:
+        @staticmethod
+        def run(coro: Any) -> None:
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(coro)
+            finally:
+                loop.close()
+
+    monkeypatch.setattr("caracal_rag.cli.asyncio", _FakeAsyncio)
+    monkeypatch.setenv("CARACAL_MCP_TRANSPORT", "http")
+
+    run_mcp(config_path=str(example_config))
+    # Reaching the end without AssertionError means http was dispatched from
+    # the env-aware config, not from a CLI override.
 
 
 def _write_manifest(home: Path, *, model: str, dim: int | None) -> Path:

@@ -6,7 +6,7 @@ from typing import Any
 from mcp.server import Server
 from mcp.types import TextContent, Tool
 
-from caracal_rag.auth import authenticate
+from caracal_rag.auth import SimpleTokenVerifier
 from caracal_rag.config import AppConfig
 from caracal_rag.embeddings import embed_texts
 from caracal_rag.vectorstore import (
@@ -17,10 +17,11 @@ from caracal_rag.vectorstore import (
     search_chunks,
 )
 
-#: Name of the request argument clients use to supply the access token on
-#: every protected tool call. It is a regular tool argument so MCP clients can
-#: pass it alongside the query; the value is never logged or echoed.
-ACCESS_TOKEN_FIELD = "access_token"
+#: Name of the protected interface. The token is NEVER a tool argument: it is
+#: supplied out-of-band through the HTTP ``Authorization`` header on the
+#: authenticated transport, so it never reaches a model-visible tool schema,
+#: tool argument, tool result, or LLM-facing transcript.
+PROTECTED_INTERFACE_NAME = "caracal-rag"
 
 
 @dataclass
@@ -41,7 +42,7 @@ class CaracalMcpServer:
             ssl=config.chroma.ssl,
         )
         self.collection = ensure_collection(self.client, config.chroma.collection)
-        self.server = Server("caracal-rag")
+        self.server = Server(PROTECTED_INTERFACE_NAME)
 
         @self.server.list_tools()
         async def list_tools() -> list[Tool]:
@@ -50,9 +51,8 @@ class CaracalMcpServer:
                     name="search_api",
                     description=(
                         "Semantic search over indexed documentation chunks. "
-                        "Protected: every call must supply a valid `access_token` "
-                        "matching the configured token; missing or invalid tokens "
-                        "are denied."
+                        "Protected: every call must be authenticated through the "
+                        "interface's out-of-band access-token channel."
                     ),
                     inputSchema={
                         "type": "object",
@@ -66,41 +66,23 @@ class CaracalMcpServer:
                                 "description": "Number of results.",
                                 "default": 5,
                             },
-                            ACCESS_TOKEN_FIELD: {
-                                "type": "string",
-                                "description": (
-                                    "Required access token for this protected "
-                                    "interface. Never echoed or logged."
-                                ),
-                            },
                         },
-                        "required": ["query", ACCESS_TOKEN_FIELD],
+                        "required": ["query"],
                     },
                 ),
             ]
 
         @self.server.call_tool()
         async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-            # Authenticate before dispatching on ANY tool call. A protected
-            # interface must never answer a request that did not present a valid
-            # token, including requests for tools that do not exist.
-            self._authenticate(arguments)
+            # Authentication happens at the transport boundary (HTTP Bearer
+            # middleware) before this handler runs, so the raw secret is never
+            # present in the model-generated arguments. Dispatch directly.
             if name == "search_api":
                 query = arguments.get("query")
                 top_k = int(arguments.get("top_k", 5))
                 results = self.search(query=query, top_k=top_k)
                 return [TextContent(type="text", text=self._format(results))]
             raise ValueError(f"Unknown tool: {name}")
-
-    def _authenticate(self, arguments: dict[str, Any]) -> None:
-        """Require a valid access token for every protected tool call.
-
-        Missing or invalid tokens are denied with an actionable error that
-        never reveals the configured token. The presented token is consumed
-        from the tool arguments and is never echoed back to the client.
-        """
-        presented = arguments.get(ACCESS_TOKEN_FIELD)
-        authenticate(self.config.access_token, presented)
 
     def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
         # Never mix query vectors from the current model with stored vectors
@@ -160,3 +142,76 @@ class CaracalMcpServer:
             lines.append(item.content)
             lines.append("---")
         return "\n".join(lines)
+
+    def http_app(self):
+        """Return the Starlette ASGI app for the authenticated HTTP transport.
+
+        The SDK's StreamableHTTP transport is wrapped with the SDK's
+        ``BearerAuthMiddleware`` and a :class:`SimpleTokenVerifier`, so every
+        request must present a valid ``Authorization: Bearer <token>`` header.
+        The token is consumed from the HTTP request, never from a tool
+        argument, so the secret never appears in the model-visible tool schema,
+        tool arguments, tool results, or LLM-facing transcript.
+        """
+        from mcp.server.auth.settings import AuthSettings
+        from mcp.server.fastmcp import FastMCP
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        host = self.config.mcp.host
+        port = self.config.mcp.port
+        # DNS rebinding protection is enabled by the SDK for localhost binds
+        # and already permits 127.0.0.1/localhost/::1. When the server binds
+        # to a different host, allow that host explicitly instead of dropping
+        # the protection entirely.
+        if host in {"127.0.0.1", "localhost", "::1"}:
+            transport_security = None
+        else:
+            transport_security = TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=[host, f"{host}:*"],
+                allowed_origins=[f"http://{host}", f"http://{host}:*"],
+            )
+
+        fastmcp = FastMCP(
+            name=PROTECTED_INTERFACE_NAME,
+            token_verifier=SimpleTokenVerifier(self.config.access_token),
+            auth=AuthSettings(
+                issuer_url=f"http://{host}:{port}",
+                resource_server_url=f"http://{host}:{port}{self.config.mcp.path}",
+            ),
+            host=host,
+            port=port,
+            transport_security=transport_security,
+        )
+        # Reuse the already-registered low-level handlers by mounting the
+        # underlying MCP server on the FastMCP app. The handlers are already
+        # registered on ``self.server`` in __init__; do NOT call
+        # ``_setup_handlers`` because that would rebind list_tools/call_tool to
+        # FastMCP's own (empty) tool manager.
+        fastmcp._mcp_server = self.server  # noqa: SLF001
+        return fastmcp.streamable_http_app()
+
+    async def run_http_async(self) -> None:
+        """Run the authenticated StreamableHTTP MCP server."""
+        import uvicorn
+
+        app = self.http_app()
+        config = uvicorn.Config(
+            app,
+            host=self.config.mcp.host,
+            port=self.config.mcp.port,
+            log_level="info",
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
+
+    async def run_stdio_async(self) -> None:
+        """Run the stdio MCP server (local, no out-of-band auth channel)."""
+        from mcp.server.stdio import stdio_server
+
+        async with stdio_server() as (read_stream, write_stream):
+            await self.server.run(
+                read_stream,
+                write_stream,
+                self.server.create_initialization_options(),
+            )

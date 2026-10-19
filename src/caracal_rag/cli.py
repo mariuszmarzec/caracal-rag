@@ -75,14 +75,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     mcp_parser = subparsers.add_parser("mcp")
     mcp_parser.add_argument(
+        "--transport",
+        default=None,
+        choices=["stdio", "http"],
+        help="MCP transport (default: $CARACAL_MCP_TRANSPORT, then 'stdio'). "
+        "stdio is a local, unauthenticated interface; http exposes the "
+        "interface behind an out-of-band Bearer access-token channel.",
+    )
+    mcp_parser.add_argument(
         "--host",
         default=None,
-        help="MCP server host (unused; stdio transport)",
+        help="MCP server host for the http transport (default: $CARACAL_MCP_HOST, "
+        "then 127.0.0.1).",
     )
     mcp_parser.add_argument(
         "--port",
         default=None,
-        help="MCP server port (unused; stdio transport)",
+        type=int,
+        help="MCP server port for the http transport (default: $CARACAL_MCP_PORT, "
+        "then 8000).",
+    )
+    mcp_parser.add_argument(
+        "--path",
+        default=None,
+        help="MCP server path for the http transport (default: $CARACAL_MCP_PATH, "
+        "then /mcp).",
     )
     mcp_parser.add_argument(
         "--config",
@@ -185,6 +202,11 @@ def run_check(config_path: str | None = None) -> None:
         print(f"chroma_heartbeat={heartbeat}")
 
         print(f"embedding_dim={observed_dim}")
+        print(
+            f"mcp_transport={config.mcp.transport} "
+            f"mcp_host={config.mcp.host} mcp_port={config.mcp.port} "
+            f"mcp_path={config.mcp.path}"
+        )
         print("ok")
     except Exception as exc:  # noqa: BLE001 - surface any connectivity failure
         secret = (
@@ -198,8 +220,10 @@ def run_check(config_path: str | None = None) -> None:
 
 
 def run_mcp(
+    transport_override: str | None = None,
     host_override: str | None = None,
-    port_override: str | None = None,
+    port_override: int | None = None,
+    path_override: str | None = None,
     config_path: str | None = None,
 ) -> None:
     from caracal_rag.mcp import CaracalMcpServer
@@ -213,16 +237,24 @@ def run_mcp(
     observed_dim = _probe_dim(config)
     _assert_index_safe(config, observed_dim=observed_dim)
 
-    # Allow host/port overrides via CLI for connection debugging
+    # Transport/host/port/path are read from the env-aware config by default;
+    # CLI overrides win for connection debugging.
+    if transport_override is not None:
+        config.mcp.transport = transport_override
     if host_override is not None:
-        config.chroma.host = host_override
+        config.mcp.host = host_override
     if port_override is not None:
-        config.chroma.port = int(port_override)
+        config.mcp.port = port_override
+    if path_override is not None:
+        config.mcp.path = path_override
 
     server = CaracalMcpServer(config)
 
     async def _run() -> None:
-        await server.server.run_stdio_async()
+        if config.mcp.transport == "http":
+            await server.run_http_async()
+        else:
+            await server.run_stdio_async()
 
     asyncio.run(_run())
 
@@ -465,7 +497,13 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "check":
         run_check(args.config)
     elif args.command == "mcp":
-        run_mcp(args.host, args.port, args.config)
+        run_mcp(
+            args.transport,
+            args.host,
+            args.port,
+            args.path,
+            args.config,
+        )
     elif args.command == "setup":
         run_setup(args.model, args.api_base)
     else:

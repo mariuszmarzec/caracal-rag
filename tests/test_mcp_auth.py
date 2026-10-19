@@ -1,8 +1,12 @@
 """Tests for access-token enforcement on the protected MCP interface.
 
-The MCP server is the intended protected Caracal RAG request path. Every tool
-call must authenticate by default; missing or invalid tokens are denied and
-authenticated calls retain the existing indexing/MCP behavior.
+The MCP server is the intended protected Caracal RAG request path. The raw
+access token is no longer a model-visible tool argument: it is supplied
+out-of-band through the HTTP ``Authorization`` header on the authenticated
+transport, so it never reaches a tool schema, tool argument, tool result, or
+LLM-facing transcript. The HTTP boundary itself is exercised in
+``test_mcp_http.py`` against the real MCP SDK; these tests keep the stubbed
+SDK and verify the low-level handlers no longer know about the token.
 """
 
 from __future__ import annotations
@@ -63,9 +67,8 @@ litellm_stub.api_base = None
 litellm_stub.api_key = None
 sys.modules["litellm"] = litellm_stub
 
-from caracal_rag.auth import AuthenticationError  # noqa: E402
 from caracal_rag.config import AppConfig  # noqa: E402
-from caracal_rag.mcp import ACCESS_TOKEN_FIELD, CaracalMcpServer  # noqa: E402
+from caracal_rag.mcp import CaracalMcpServer  # noqa: E402
 
 VALID_TOKEN = "correct-horse-battery-staple"
 
@@ -122,70 +125,40 @@ def _make_server(
     return CaracalMcpServer(config)
 
 
-def test_tool_schema_requires_access_token_field(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tool_schema_hides_access_token_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The raw token must never appear in the model-visible tool schema."""
     server = _make_server(monkeypatch)
     handler = server.server.list_tools_handler
     assert handler is not None
     tools = asyncio.run(handler())
     assert len(tools) == 1
     schema = tools[0].inputSchema
-    assert ACCESS_TOKEN_FIELD in schema["properties"]
-    assert ACCESS_TOKEN_FIELD in schema["required"]
-    assert schema["properties"][ACCESS_TOKEN_FIELD]["type"] == "string"
+    assert "access_token" not in schema["properties"]
+    assert "access_token" not in schema["required"]
+    assert schema["required"] == ["query"]
+    assert set(schema["properties"]) == {"query", "top_k"}
 
 
-def test_call_tool_denies_missing_token(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_call_tool_dispatches_without_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the token out-of-band, the low-level handler no longer needs it."""
     server = _make_server(monkeypatch)
     handler = server.server.call_tool_handler
     assert handler is not None
-    with pytest.raises(AuthenticationError, match="no access token was presented"):
-        asyncio.run(handler("search_api", {"query": "login"}))
-
-
-def test_call_tool_denies_invalid_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    server = _make_server(monkeypatch)
-    handler = server.server.call_tool_handler
-    assert handler is not None
-    with pytest.raises(AuthenticationError, match="does not match"):
-        asyncio.run(
-            handler("search_api", {"query": "login", ACCESS_TOKEN_FIELD: "wrong-token"})
-        )
-
-
-def test_call_tool_denies_short_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    server = _make_server(monkeypatch)
-    handler = server.server.call_tool_handler
-    assert handler is not None
-    with pytest.raises(AuthenticationError, match="too short"):
-        asyncio.run(
-            handler("search_api", {"query": "login", ACCESS_TOKEN_FIELD: "short"})
-        )
-
-
-def test_call_tool_accepts_valid_token_and_preserves_behavior(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An authenticated call retains the existing indexing/MCP behavior."""
-    server = _make_server(monkeypatch)
-    handler = server.server.call_tool_handler
-    assert handler is not None
-    result = asyncio.run(
-        handler("search_api", {"query": "login", ACCESS_TOKEN_FIELD: VALID_TOKEN})
-    )
+    result = asyncio.run(handler("search_api", {"query": "login"}))
     assert len(result) == 1
     assert result[0].type == "text"
     assert "Source: api" in result[0].text
     assert "Document: login.md" in result[0].text
+    # The configured token must never leak into the tool result.
+    assert VALID_TOKEN not in result[0].text
 
 
-def test_call_tool_unknown_tool_still_denied_without_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Auth runs before tool dispatch, so unknown tools are also rejected."""
+def test_call_tool_unknown_tool_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unknown tools fail with a clear error; no auth gate stands in the way."""
     server = _make_server(monkeypatch)
     handler = server.server.call_tool_handler
     assert handler is not None
-    with pytest.raises(AuthenticationError, match="no access token was presented"):
+    with pytest.raises(ValueError, match="Unknown tool: bogus"):
         asyncio.run(handler("bogus", {}))
 
 
@@ -195,15 +168,3 @@ def test_disabled_policy_skips_authentication(monkeypatch: pytest.MonkeyPatch) -
     assert handler is not None
     result = asyncio.run(handler("search_api", {"query": "login"}))
     assert len(result) == 1
-
-
-def test_authenticate_error_does_not_reveal_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    server = _make_server(monkeypatch)
-    handler = server.server.call_tool_handler
-    assert handler is not None
-    with pytest.raises(AuthenticationError) as excinfo:
-        asyncio.run(
-            handler("search_api", {"query": "login", ACCESS_TOKEN_FIELD: "wrong-token"})
-        )
-    assert VALID_TOKEN not in str(excinfo.value)
-    assert "***" not in str(excinfo.value)
