@@ -17,6 +17,8 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -e ".[dev]"
+      - name: Validate shell scripts
+        run: bash -n install.sh update.sh
       - name: Lint
         run: ruff check .
       - name: Test
