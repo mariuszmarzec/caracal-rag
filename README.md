@@ -8,6 +8,7 @@ Caracal RAG - a retrieval-augmented generation toolkit.
 src/caracal_rag/          package source (src layout)
 tests/                    pytest test suite
 install.sh                WSL/Linux installer into ~/.caracal
+update.sh                 Safe Git update + reinstall + validation
 .github/workflows/ci.yml  CI: lint (ruff) + tests (pytest) on PRs and main
 ```
 
@@ -158,16 +159,37 @@ The MCP server exposes the `search_api(query, top_k=5)` tool to connected agents
 
 ## Updating, rotating credentials, rebuilding and uninstalling
 
-### Upgrade
+### Upgrade / reinstall
 
-From the Caracal source checkout, pull the version you want to install and rerun the installer:
+Run the update script from the root of your Caracal source checkout:
 
 ```bash
-git pull
-./install.sh
+bash ./update.sh
 ```
 
-The installer updates the package in `~/.caracal/venv` from the checkout, but preserves `~/.caracal/config/sources.yaml`, `secrets.yaml`, and the local index manifest. The installed runtime uses the virtual environment and active configuration under `~/.caracal`; it does not import Python modules from the checkout.
+By default, the script:
+1. Requires a clean Git worktree and a current branch with an upstream configured.
+2. Runs `git pull --ff-only` so it will not create a merge commit or silently resolve divergent history.
+3. Runs `install.sh` to reinstall the package and its Python dependencies into `~/.caracal/venv`.
+4. Runs `caracal-rag check` using the installed CLI to validate configuration and connectivity.
+
+If you have local edits you intentionally want to install without pulling from Git, run:
+
+```bash
+bash ./update.sh --no-pull
+```
+
+To skip the connectivity check (for example, when FreeLLMAPI or Chroma is temporarily unreachable):
+
+```bash
+bash ./update.sh --skip-check
+```
+
+You can combine the options: `bash ./update.sh --no-pull --skip-check`. The default update refuses to pull if the checkout has modified, staged or untracked files. Commit/stash those files first, or use `--no-pull` to reinstall the current checkout as-is.
+
+The script and installer preserve `~/.caracal/config/sources.yaml`, `~/.caracal/config/secrets.yaml`, and the local index manifest; they do not rebuild the index or delete the remote Chroma collection. After a successful update, restart the process or host that launches the Caracal MCP server (such as OpenClaw/OpenCode) so it imports the new Python code. The script cannot safely restart an MCP host whose lifecycle is managed separately.
+
+The installed runtime uses the virtual environment and active configuration under `~/.caracal`; it does not import Python modules directly from the checkout. You can also run `bash ./install.sh` manually to reinstall the current checkout without pulling or running the post-install check.
 
 ### Rotate credentials
 
