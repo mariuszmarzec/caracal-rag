@@ -134,8 +134,12 @@ class SimpleTokenVerifier:
     :func:`authenticate`, which uses ``secrets.compare_digest``.
     """
 
-    def __init__(self, access_token: AccessTokenConfig) -> None:
+    def __init__(self, access_token: AccessTokenConfig, *, resource: str | None = None) -> None:
         self.access_token = access_token
+        # ``resource`` is the interface's resource_server_url; it is stamped on
+        # the returned AccessToken so the SDK's resource check passes. It is a
+        # URL string, never the secret.
+        self.resource = str(resource) if resource is not None else None
 
     async def verify_token(self, token: str) -> Any:
         """Return an :class:`AccessToken` when ``token`` is valid, else ``None``.
@@ -144,6 +148,10 @@ class SimpleTokenVerifier:
         request is unauthenticated, which the surrounding
         ``RequireAuthMiddleware`` turns into a ``401``. The configured token is
         never echoed in the returned object or in any error.
+
+        ``resource`` (the interface's ``resource_server_url``) is stamped on
+        the returned token when set, so the SDK's resource check passes for a
+        token issued for this interface. It is a URL, never the secret.
         """
         # Local import: the MCP SDK is an optional dependency at the auth
         # module level, and this verifier is only used by the HTTP transport
@@ -154,4 +162,7 @@ class SimpleTokenVerifier:
             authenticate(self.access_token, token)
         except AuthenticationError:
             return None
-        return AccessToken(token=token, client_id="caracal-rag", scopes=[])
+        kwargs: dict[str, Any] = dict(token=token, client_id="caracal-rag", scopes=[])
+        if self.resource is not None:
+            kwargs["resource"] = self.resource
+        return AccessToken(**kwargs)

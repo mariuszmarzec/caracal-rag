@@ -132,7 +132,9 @@ def test_tool_schema_hides_access_token_field(monkeypatch: pytest.MonkeyPatch) -
     assert handler is not None
     tools = asyncio.run(handler())
     assert len(tools) == 1
-    schema = tools[0].inputSchema
+    # The SDK renamed the field between versions: 1.x exposes ``inputSchema``
+    # as the attribute, 2.x exposes ``input_schema`` (alias ``inputSchema``).
+    schema = getattr(tools[0], "inputSchema", None) or tools[0].input_schema
     assert "access_token" not in schema["properties"]
     assert "access_token" not in schema["required"]
     assert schema["required"] == ["query"]

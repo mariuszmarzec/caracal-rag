@@ -46,6 +46,8 @@ class CaracalMcpServer:
         self._register_handlers(self.server)
 
     def _register_handlers(self, server):
+        # The SDK 1.x ``Server`` exposes ``list_tools``/``call_tool`` as
+        # decorators; 2.x removed them in favour of ``add_request_handler``.
         list_tools_attr = getattr(server, "list_tools", None)
         call_tool_attr = getattr(server, "call_tool", None)
         if callable(list_tools_attr) and callable(call_tool_attr):
@@ -83,8 +85,10 @@ class CaracalMcpServer:
                     return [TextContent(type="text", text=self._format(results))]
                 raise ValueError(f"Unknown tool: {name}")
         else:
-            # Fallback for mcp 2.x server
-            from mcp.server.types import (
+            # mcp 2.x: register request handlers via add_request_handler. The
+            # result/request param models live in ``mcp.types`` (NOT
+            # ``mcp.server.types``, which does not exist in any shipped SDK).
+            from mcp.types import (
                 CallToolRequestParams,
                 CallToolResult,
                 ListToolsResult,
@@ -120,16 +124,15 @@ class CaracalMcpServer:
             async def call_tool_handler(
                 context, params: CallToolRequestParams
             ) -> CallToolResult:
-                data = params.data
-                name = data.get("name")
-                arguments = data.get("arguments")
+                name = params.name
+                arguments = params.arguments or {}
                 if name == "search_api":
                     query = arguments.get("query")
                     top_k = int(arguments.get("top_k", 5))
                     results = self.search(query=query, top_k=top_k)
                     return CallToolResult(
-                        tool_name=name,
-                        result=[TextContent(type="text", text=self._format(results))]
+                        content=[TextContent(type="text", text=self._format(results))],
+                        is_error=False,
                     )
                 raise ValueError(f"Unknown tool: {name}")
 
@@ -195,13 +198,10 @@ class CaracalMcpServer:
         """
         from mcp.server.auth.settings import AuthSettings
         from mcp.server.transport_security import TransportSecuritySettings
-        try:
-            from mcp.server.fastmcp import FastMCP
-        except Exception:
-            from mcp.server.mcpserver import MCPServer as FastMCP
 
         host = self.config.mcp.host
         port = self.config.mcp.port
+        path = self.config.mcp.path
         if host in {"127.0.0.1", "localhost", "::1"}:
             transport_security = None
         else:
@@ -210,13 +210,38 @@ class CaracalMcpServer:
                 allowed_hosts=[host, f"{host}:*"],
                 allowed_origins=[f"http://{host}", f"http://{host}:*"],
             )
+        auth_kwargs = dict(
+            issuer_url=f"http://{host}:{port}",
+            resource_server_url=f"http://{host}:{port}{path}",
+        )
+        # validate_token_resource was added in mcp 2.x; 1.x silently ignores
+        # unknown kwargs only if extra='ignore' (it is not), so gate it.
+        if "validate_token_resource" in AuthSettings.model_fields:
+            auth_kwargs["validate_token_resource"] = True
+        auth_settings = AuthSettings(**auth_kwargs)
+        token_verifier = SimpleTokenVerifier(
+            self.config.access_token,
+            resource=auth_settings.resource_server_url,
+        )
+
+        # 1.x ships ``FastMCP`` (which owns its own low-level Server and is the
+        # only way to mount the bearer auth middleware there); 2.x removed
+        # FastMCP and the low-level ``Server`` itself accepts the auth kwargs.
+        try:
+            from mcp.server.fastmcp import FastMCP
+        except Exception:
+            return self.server.streamable_http_app(
+                streamable_http_path=path,
+                host=host,
+                transport_security=transport_security,
+                auth=auth_settings,
+                token_verifier=token_verifier,
+            )
+
         fastmcp = FastMCP(
             name=PROTECTED_INTERFACE_NAME,
-            token_verifier=SimpleTokenVerifier(self.config.access_token),
-            auth=AuthSettings(
-                issuer_url=f"http://{host}:{port}",
-                resource_server_url=f"http://{host}:{port}{self.config.mcp.path}",
-            ),
+            token_verifier=token_verifier,
+            auth=auth_settings,
             host=host,
             port=port,
             transport_security=transport_security,

@@ -46,8 +46,13 @@ litellm_stub.api_base = None
 litellm_stub.api_key = None
 sys.modules["litellm"] = litellm_stub
 
-# --- restore the real MCP SDK (other test modules stub it globally) ----------
-for name in [
+# The other MCP test modules stub ``mcp`` in ``sys.modules`` at import time, so
+# this module must restore the real SDK before use. That cannot be done once at
+# module level: pytest imports every test module during collection (alphabetically),
+# so a later-collected module can re-stub ``sys.modules["mcp.types"]`` before the
+# session actually runs. Restoring in an autouse fixture guarantees the real SDK
+# is present for every test in this module regardless of collection order.
+_MCP_SUBMODULES = [
     "mcp",
     "mcp.server",
     "mcp.server.fastmcp",
@@ -63,15 +68,36 @@ for name in [
     "mcp.types",
     "mcp.shared.message",
     "mcp.shared.session",
-]:
+]
+
+# Restore at module level too: a previously collected module may have stubbed
+# ``mcp`` as a plain module, which makes ``import caracal_rag.mcp`` fail at
+# collection time (its top-level ``from mcp.server import Server`` needs the
+# real package). The fixture below re-restores before every test execution.
+for name in _MCP_SUBMODULES:
     sys.modules.pop(name, None)
 import mcp  # noqa: F401,E402  (real package)
 
-# caracal_rag.mcp must be reloaded so it binds to the real SDK rather than
-# whatever the previous test module left in sys.modules.
 import caracal_rag.mcp as mcp_module  # noqa: E402
 
 mcp_module = importlib.reload(mcp_module)
+
+
+@pytest.fixture(autouse=True)
+def _restore_real_mcp() -> None:
+    """Restore the real MCP SDK before each test.
+
+    Only ``sys.modules`` is restored, never ``caracal_rag.mcp``: reloading that
+    module would re-execute its class definitions and break ``isinstance`` checks
+    in other test modules that bound those classes at collection time. The
+    module's own top-level ``from mcp.server import Server`` etc. were bound when
+    this module collected (with the real SDK), so they stay valid; this fixture
+    just makes sure the lazy ``from mcp.types import ...`` inside
+    ``_register_handlers`` resolves to the real SDK at execution time.
+    """
+    for name in _MCP_SUBMODULES:
+        sys.modules.pop(name, None)
+import mcp  # noqa: F401,F811,E402  (real package; F811: re-import in fixture)
 
 # --- minimal ASGI test client (no heavy dependency needed) -------------------
 ACCEPT = "application/json, text/event-stream"
