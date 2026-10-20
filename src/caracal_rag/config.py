@@ -11,8 +11,42 @@ import yaml
 CARACAL_HOME_ENV = "CARACAL_HOME"
 #: Environment variable with a FreeLLMAPI key; takes precedence over secrets.yaml.
 EMBEDDING_API_KEY_ENV = "CARACAL_EMBEDDING_API_KEY"
+#: Environment variable with the Caracal RAG access token; takes precedence over
+#: secrets.yaml. Used by every protected interface (the MCP server). It is read
+#: from the server's own environment so an MCP client never has to smuggle a
+#: secret through a tool-argument field.
+ACCESS_TOKEN_ENV = "CARACAL_ACCESS_TOKEN"
+
+#: Environment variable selecting the MCP server transport. The default is
+#: ``http`` (the authenticated interface); ``stdio`` runs the SDK's stdio
+#: transport, which is a local, unauthenticated interface for a trusted host
+#: only.
+MCP_TRANSPORT_ENV = "CARACAL_MCP_TRANSPORT"
+#: Environment variable for the HTTP MCP server bind host.
+MCP_HOST_ENV = "CARACAL_MCP_HOST"
+#: Environment variable for the HTTP MCP server bind port.
+MCP_PORT_ENV = "CARACAL_MCP_PORT"
+#: Environment variable for the HTTP MCP server path.
+MCP_PATH_ENV = "CARACAL_MCP_PATH"
 
 DEFAULT_EMBEDDING_API_BASE = "http://localhost:3001/v1"
+
+#: Default MCP transport: ``http`` is the authenticated interface. ``stdio`` is
+#: the zero-config local mode, but it has no out-of-band caller-authentication
+#: channel, so a token check on stdio can only ever be a tool-argument check
+#: (which leaks the secret into the model-visible transcript); stdio is an
+#: explicit opt-in for a trusted host only.
+DEFAULT_MCP_TRANSPORT = "http"
+#: Default bind host for the HTTP MCP server.
+DEFAULT_MCP_HOST = "127.0.0.1"
+#: Default bind port for the HTTP MCP server.
+DEFAULT_MCP_PORT = 8000
+#: Default HTTP path for the MCP server.
+DEFAULT_MCP_PATH = "/mcp"
+
+#: Minimum length for a configured access token. A shorter value is refused
+#: during setup and at runtime instead of being silently accepted.
+MIN_TOKEN_LENGTH = 8
 
 
 class ConfigError(Exception):
@@ -105,6 +139,26 @@ _EMBEDDING_FIELDS = {"model", "api_base", "api_key"}
 #: Fields this version knows how to coerce into ``ChromaConfig``.
 _CHROMA_FIELDS = {"host", "port", "collection", "ssl"}
 
+#: Fields this version knows how to coerce into ``AccessTokenConfig``.
+_ACCESS_TOKEN_FIELDS = {"enabled", "token"}
+#: Fields this version knows how to coerce into ``McpTransportConfig``.
+_MCP_FIELDS = {"transport", "host", "port", "path"}
+
+
+@dataclass
+class AccessTokenConfig:
+    """Configuration for the required Caracal RAG access token.
+
+    ``enabled`` defaults to ``True``: every protected interface path must
+    authenticate by default, and there is no silent unauthenticated fallback.
+    ``token`` is never stored in the active configuration file; it lives in
+    ``secrets.yaml`` (mode ``0600``) or in the ``CARACAL_ACCESS_TOKEN``
+    environment variable, in that order of precedence.
+    """
+
+    enabled: bool = True
+    token: str | None = None
+
 
 @dataclass
 class ChromaConfig:
@@ -131,10 +185,46 @@ def _coerce_source(item: dict[str, Any]) -> SourceConfig:
 
 
 @dataclass
+class McpTransportConfig:
+    """Transport settings for the MCP server.
+
+    ``stdio`` is the zero-config local mode: the SDK streams JSON-RPC over the
+    process' stdin/stdout, which has no out-of-band caller-authentication
+    channel. ``http`` runs the SDK's StreamableHTTP server behind the SDK's
+    Bearer-auth middleware, which is the only transport that can demand the
+    access token from the ``Authorization`` request header instead of a
+    model-generated tool argument.
+    """
+
+    transport: str = field(
+        default_factory=lambda: os.getenv(MCP_TRANSPORT_ENV, DEFAULT_MCP_TRANSPORT)
+    )
+    host: str = field(default_factory=lambda: os.getenv(MCP_HOST_ENV, DEFAULT_MCP_HOST))
+    port: int = field(
+        default_factory=lambda: int(os.getenv(MCP_PORT_ENV, str(DEFAULT_MCP_PORT)))
+    )
+    path: str = field(default_factory=lambda: os.getenv(MCP_PATH_ENV, DEFAULT_MCP_PATH))
+
+    def __post_init__(self) -> None:
+        self.transport = str(self.transport).strip().lower() or DEFAULT_MCP_TRANSPORT
+        if self.transport not in {"stdio", "http"}:
+            raise ConfigError(
+                f"Unknown MCP transport {self.transport!r}. Valid transports are "
+                "'stdio' (local, unauthenticated) and 'http' "
+                "(authenticated interface, the default). "
+                f"Set {MCP_TRANSPORT_ENV} or 'mcp.transport' in the active config."
+            )
+
+
+@dataclass
 class AppConfig:
     sources: list[SourceConfig]
     embedding: EmbeddingConfig
     chroma: ChromaConfig
+    access_token: AccessTokenConfig = field(
+        default_factory=AccessTokenConfig
+    )
+    mcp: McpTransportConfig = field(default_factory=McpTransportConfig)
     #: Where this configuration was loaded from, when known. Runtime commands
     #: use it to load documents from the *active* configuration instead of a
     #: checkout-relative path.
@@ -159,6 +249,7 @@ class AppConfig:
         sources = [_coerce_source(item) for item in data.get("sources", [])]
         embedding_data = dict(data.get("embedding", {}) or {})
         chroma_data = data.get("chroma", {}) or {}
+        access_token_data = data.get("access_token", {}) or {}
 
         configured_model = embedding_data.get("model") or os.getenv("CARACAL_EMBEDDING_MODEL")
         if not str(configured_model or "").strip():
@@ -189,16 +280,38 @@ class AppConfig:
         chroma = ChromaConfig(
             **{key: value for key, value in chroma_data.items() if key in _CHROMA_FIELDS}
         )
+        access_token = AccessTokenConfig(
+            **{
+                key: value
+                for key, value in access_token_data.items()
+                if key in _ACCESS_TOKEN_FIELDS
+            }
+        )
+        mcp_data = data.get("mcp", {}) or {}
+        mcp = McpTransportConfig(
+            **{key: value for key, value in mcp_data.items() if key in _MCP_FIELDS}
+        )
 
-        return cls(sources=sources, embedding=embedding, chroma=chroma, config_path=path)
+        return cls(
+            sources=sources,
+            embedding=embedding,
+            chroma=chroma,
+            access_token=access_token,
+            mcp=mcp,
+            config_path=path,
+        )
 
 
 def load_secrets(path: Path) -> dict[str, str]:
-    """Load user secrets (the FreeLLMAPI key) from the secrets file.
+    """Load user secrets (the FreeLLMAPI key and the access token) from the secrets file.
 
     The file must not be readable by group or other users; a loose mode is
     refused rather than silently read, because the key must never sit in a
     world-readable file. Returns an empty dict when the file does not exist.
+
+    The returned mapping may carry ``api_key`` (from ``embedding.api_key``) and
+    ``access_token`` (from ``access_token.token``). Either may be absent; the
+    caller decides what is required for its interface.
     """
     if not path.is_file():
         return {}
@@ -216,11 +329,16 @@ def load_secrets(path: Path) -> dict[str, str]:
             f"Could not read secrets file at {path}; the key was not loaded. "
             "Repair the YAML or restore a valid backup. Secret values are omitted from this error."
         ) from exc
+    result: dict[str, str] = {}
     embedding_data = data.get("embedding", {}) or {}
     api_key = embedding_data.get("api_key")
     if isinstance(api_key, str) and api_key.strip():
-        return {"api_key": api_key}
-    return {}
+        result["api_key"] = api_key
+    token_data = data.get("access_token", {}) or {}
+    token = token_data.get("token")
+    if isinstance(token, str) and token.strip():
+        result["access_token"] = token
+    return result
 
 
 def write_secret_api_key(path: Path, api_key: str) -> None:
@@ -245,6 +363,44 @@ def write_secret_api_key(path: Path, api_key: str) -> None:
     embedding_data = dict(data.get("embedding", {}) or {})
     embedding_data["api_key"] = api_key
     data["embedding"] = embedding_data
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=False)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
+def write_secret_access_token(path: Path, token: str) -> None:
+    """Persist the Caracal RAG access token in the private secrets file.
+
+    Mirrors :func:`write_secret_api_key`: any other keys already present in the
+    file are preserved, existing files are made private before they are read or
+    rewritten, and the open descriptor is forced to mode 0600 before secret
+    bytes are written. The token is stored under ``access_token.token`` so it
+    stays out of the active configuration file, which is intentionally
+    secret-free.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data: dict[str, Any] = {}
+    if path.is_file():
+        os.chmod(path, 0o600)
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            raise ConfigError(
+                f"Could not read secrets file at {path}; it was left unchanged. "
+                "Repair the YAML or restore a valid backup before rotating credentials."
+            ) from exc
+    token_data = dict(data.get("access_token", {}) or {})
+    token_data["token"] = token
+    data["access_token"] = token_data
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.fchmod(fd, 0o600)
@@ -294,6 +450,25 @@ def write_config(config: AppConfig, path: Path) -> None:
         embedding_data["model"] = config.embedding.model
         embedding_data["api_base"] = config.embedding.api_base
         data["embedding"] = embedding_data
+        # The active configuration never holds the token; only the access_token
+        # *policy* (enabled/disabled) is persisted here. Any legacy
+        # ``access_token.token`` that leaked into the active config is migrated
+        # into secrets.yaml by setup and stripped from this file.
+        access_token_data = data.get("access_token", {}) or {}
+        if isinstance(access_token_data, dict):
+            access_token_data = dict(access_token_data)
+            access_token_data.pop("token", None)
+            access_token_data["enabled"] = config.access_token.enabled
+            data["access_token"] = access_token_data
+        # The MCP transport is a deployment choice (stdio/http), not a secret.
+        mcp_data = data.get("mcp", {}) or {}
+        if isinstance(mcp_data, dict):
+            mcp_data = dict(mcp_data)
+            mcp_data["transport"] = config.mcp.transport
+            mcp_data["host"] = config.mcp.host
+            mcp_data["port"] = config.mcp.port
+            mcp_data["path"] = config.mcp.path
+            data["mcp"] = mcp_data
     else:
         data = {
             "embedding": {
@@ -305,6 +480,13 @@ def write_config(config: AppConfig, path: Path) -> None:
                 "port": config.chroma.port,
                 "collection": config.chroma.collection,
                 "ssl": config.chroma.ssl,
+            },
+            "access_token": {"enabled": config.access_token.enabled},
+            "mcp": {
+                "transport": config.mcp.transport,
+                "host": config.mcp.host,
+                "port": config.mcp.port,
+                "path": config.mcp.path,
             },
             "sources": [_source_to_dict(source) for source in config.sources],
         }
@@ -353,4 +535,9 @@ def load_active_config(config_path: str | Path | None = None) -> AppConfig:
     env_key = os.getenv(EMBEDDING_API_KEY_ENV)
     if env_key:
         config.embedding.api_key = env_key
+    if secrets.get("access_token"):
+        config.access_token.token = secrets["access_token"]
+    env_token = os.getenv(ACCESS_TOKEN_ENV)
+    if env_token:
+        config.access_token.token = env_token
     return config

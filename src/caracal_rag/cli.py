@@ -5,8 +5,11 @@ import asyncio
 import os
 import sys
 
+from caracal_rag.auth import redact_token
 from caracal_rag.config import (
+    ACCESS_TOKEN_ENV,
     EMBEDDING_API_KEY_ENV,
+    AccessTokenConfig,
     AppConfig,
     ChromaConfig,
     ConfigError,
@@ -14,6 +17,7 @@ from caracal_rag.config import (
     load_active_config,
     resolve_home,
     write_config,
+    write_secret_access_token,
     write_secret_api_key,
 )
 from caracal_rag.embeddings import probe_embedding_dim, redact_secret, validate_embedding_endpoint
@@ -71,14 +75,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     mcp_parser = subparsers.add_parser("mcp")
     mcp_parser.add_argument(
+        "--transport",
+        default=None,
+        choices=["stdio", "http"],
+        help="MCP transport (default: $CARACAL_MCP_TRANSPORT, then 'http'). "
+        "http exposes the interface behind an out-of-band Bearer access-token "
+        "channel; stdio is a local, unauthenticated interface for a trusted host.",
+    )
+    mcp_parser.add_argument(
         "--host",
         default=None,
-        help="MCP server host (unused; stdio transport)",
+        help="MCP server host for the http transport (default: $CARACAL_MCP_HOST, "
+        "then 127.0.0.1).",
     )
     mcp_parser.add_argument(
         "--port",
         default=None,
-        help="MCP server port (unused; stdio transport)",
+        type=int,
+        help="MCP server port for the http transport (default: $CARACAL_MCP_PORT, "
+        "then 8000).",
+    )
+    mcp_parser.add_argument(
+        "--path",
+        default=None,
+        help="MCP server path for the http transport (default: $CARACAL_MCP_PATH, "
+        "then /mcp).",
     )
     mcp_parser.add_argument(
         "--config",
@@ -98,6 +119,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="FreeLLMAPI base URL (default: http://localhost:3001/v1)",
     )
+    # The access token is intentionally NOT a CLI argument: command-line
+    # arguments leak through shell history and process listings. It is supplied
+    # through the hidden prompt or the CARACAL_ACCESS_TOKEN environment var.
     return parser
 
 
@@ -144,11 +168,16 @@ def run_check(config_path: str | None = None) -> None:
     endpoints: it asks Chroma for a heartbeat and issues a probe embedding
     through LiteLLM, so a misconfigured or unreachable service fails fast
     with a non-zero exit code.
+
+    The access-token policy is validated here too, so a deployment whose
+    protected interface would start in a broken state is caught before the
+    MCP server is started.
     """
     config: AppConfig | None = None
     try:
         config = load_active_config(config_path)
         _ensure_api_key(config)
+        _ensure_access_token(config)
         # ``check`` must validate the *live* collection, not only the durable
         # manifest. A missing manifest does not make a pre-existing collection
         # compatible: vectors without model metadata (legacy/mixed) or tagged
@@ -161,6 +190,8 @@ def run_check(config_path: str | None = None) -> None:
         print(f"embedding_model={config.embedding.model}")
         print(f"embedding_api_base={config.embedding.api_base}")
         print(f"chroma={config.chroma.host}:{config.chroma.port}")
+        print(f"access_token_enabled={config.access_token.enabled}")
+        print(f"access_token_configured={bool(config.access_token.token)}")
 
         client = _chroma_client(
             host=config.chroma.host,
@@ -171,6 +202,11 @@ def run_check(config_path: str | None = None) -> None:
         print(f"chroma_heartbeat={heartbeat}")
 
         print(f"embedding_dim={observed_dim}")
+        print(
+            f"mcp_transport={config.mcp.transport} "
+            f"mcp_host={config.mcp.host} mcp_port={config.mcp.port} "
+            f"mcp_path={config.mcp.path}"
+        )
         print("ok")
     except Exception as exc:  # noqa: BLE001 - surface any connectivity failure
         secret = (
@@ -178,35 +214,47 @@ def run_check(config_path: str | None = None) -> None:
             if config is not None
             else os.getenv(EMBEDDING_API_KEY_ENV)
         )
-        print(redact_secret(f"check failed: {exc}", secret), file=sys.stderr)
+        token = config.access_token.token if config is not None else os.getenv(ACCESS_TOKEN_ENV)
+        print(redact_secret(redact_token(f"check failed: {exc}", token), secret), file=sys.stderr)
         sys.exit(1)
 
 
 def run_mcp(
+    transport_override: str | None = None,
     host_override: str | None = None,
-    port_override: str | None = None,
+    port_override: int | None = None,
+    path_override: str | None = None,
     config_path: str | None = None,
 ) -> None:
     from caracal_rag.mcp import CaracalMcpServer
 
     config = load_active_config(config_path)
     _ensure_api_key(config)
+    _ensure_access_token(config)
     # Probe the live dimension before the MCP server starts serving. The
     # manifest and collection are validated against it, so a dimension drift
     # is refused before any query vector is generated.
     observed_dim = _probe_dim(config)
     _assert_index_safe(config, observed_dim=observed_dim)
 
-    # Allow host/port overrides via CLI for connection debugging
+    # Transport/host/port/path are read from the env-aware config by default;
+    # CLI overrides win for connection debugging.
+    if transport_override is not None:
+        config.mcp.transport = transport_override
     if host_override is not None:
-        config.chroma.host = host_override
+        config.mcp.host = host_override
     if port_override is not None:
-        config.chroma.port = int(port_override)
+        config.mcp.port = port_override
+    if path_override is not None:
+        config.mcp.path = path_override
 
     server = CaracalMcpServer(config)
 
     async def _run() -> None:
-        await server.server.run_stdio_async()
+        if config.mcp.transport == "http":
+            await server.run_http_async()
+        else:
+            await server.run_stdio_async()
 
     asyncio.run(_run())
 
@@ -223,6 +271,28 @@ def _ensure_api_key(config: AppConfig) -> None:
             f"{EMBEDDING_API_KEY_ENV}, or by setting `embedding.api_key` in the "
             "secrets file under your Caracal home (~/.caracal/config/secrets.yaml). "
             "The key must be a valid key for the configured FreeLLMAPI endpoint."
+        )
+
+
+def _ensure_access_token(config: AppConfig) -> None:
+    """Fail early with actionable guidance when the access token is unusable.
+
+    ``enabled`` defaults to ``True``, so a deployment whose protected interface
+    would start broken is caught at ``check``/``mcp`` startup instead of at the
+    first request. The token is never echoed: the message only names where to
+    obtain or rotate it.
+    """
+    if not config.access_token.enabled:
+        return
+    token = config.access_token.token
+    if not isinstance(token, str) or len(token) < 8:
+        raise ConfigError(
+            "Access authentication is enabled but no valid access token is "
+            "configured. Provide one by running 'caracal-rag setup', by "
+            f"exporting {ACCESS_TOKEN_ENV}, or by setting `access_token.token` "
+            "in the secrets file under your Caracal home "
+            "(~/.caracal/config/secrets.yaml). The token must be at least 8 "
+            "characters long."
         )
 
 
@@ -286,12 +356,14 @@ def run_setup(
     model: str | None = None,
     api_base: str | None = None,
     api_key: str | None = None,
+    access_token: str | None = None,
 ) -> None:
     """Create or update the active installed configuration and secrets.
 
     Idempotent: existing configuration and secrets are preserved and only the
-    fields the user explicitly provides are updated. The API key is read from
-    a hidden prompt (not echoed) when not given on the command line.
+    fields the user explicitly provides are updated. The API key and the
+    access token are read from hidden prompts (not echoed) when not given on
+    the command line, and are never passed as command-line arguments.
     """
     home = resolve_home()
     interactive = sys.stdin.isatty()
@@ -334,6 +406,35 @@ def run_setup(
                 "leak through shell history and process listings."
             )
 
+    # The access token protects every interface path. It is required by
+    # default; the only way to change that is an explicit `enabled: false` in
+    # the active configuration. The token is prompted once on first setup and
+    # preserved on reruns unless the user explicitly supplies a new one.
+    resolved_token = (
+        access_token
+        or (existing.access_token.token if existing else None)
+        or os.getenv(ACCESS_TOKEN_ENV)
+    )
+    if not resolved_token:
+        if interactive:
+            import getpass
+
+            prompt = "Caracal RAG access token (input hidden, min 8 chars): "
+            resolved_token = getpass.getpass(prompt).strip() or None
+        if not resolved_token:
+            raise ConfigError(
+                "No access token supplied. Every protected Caracal RAG "
+                "interface requires a valid token. Enter it at the hidden "
+                "prompt, or export "
+                f"{ACCESS_TOKEN_ENV} and re-run `caracal-rag setup`. Do not "
+                "pass the token as a command-line argument."
+            )
+    if len(resolved_token) < 8:
+        raise ConfigError(
+            "The access token is too short. It must be at least 8 characters "
+            "long; a shorter value would not be a usable credential."
+        )
+
     # Reuse the example config from the checkout when available so sources
     # carry over; otherwise start from an empty source list the user can edit.
     if existing is not None:
@@ -353,16 +454,19 @@ def run_setup(
                 api_key=resolved_api_key,
             ),
             chroma=ChromaConfig(),
+            access_token=AccessTokenConfig(token=resolved_token),
             config_path=home.config_path,
         )
 
     # Persist the active configuration (no secrets) and the secrets file.
     write_config(config, home.config_path)
     write_secret_api_key(home.secrets_path, resolved_api_key)
+    write_secret_access_token(home.secrets_path, resolved_token)
 
     # Validate the endpoint/model before declaring success so a bad model or
     # key is caught during setup, not later during indexing.
     config.embedding.api_key = resolved_api_key
+    config.access_token.token = resolved_token
     try:
         validate_embedding_endpoint(
             api_base=config.embedding.api_base,
@@ -372,7 +476,8 @@ def run_setup(
     except ConfigError:
         # Still keep the config/secrets on disk; the user can fix and re-check.
         print(
-            f"Setup wrote configuration to {home.config_path} and the key to "
+            f"Setup wrote configuration to {home.config_path}, the key to "
+            f"{home.secrets_path}, and the access token to "
             f"{home.secrets_path}, but the endpoint validation failed. Run "
             "'caracal-rag check' to retry once the service is reachable.",
             file=sys.stderr,
@@ -380,6 +485,7 @@ def run_setup(
         raise
     print(f"Configured {home.config_path} (model={config.embedding.model!r})")
     print(f"Stored FreeLLMAPI API key at {home.secrets_path} (mode 0600)")
+    print(f"Stored access token at {home.secrets_path} (mode 0600)")
     print("Run 'caracal-rag check' to validate connectivity.")
 
 
@@ -391,7 +497,13 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "check":
         run_check(args.config)
     elif args.command == "mcp":
-        run_mcp(args.host, args.port, args.config)
+        run_mcp(
+            args.transport,
+            args.host,
+            args.port,
+            args.path,
+            args.config,
+        )
     elif args.command == "setup":
         run_setup(args.model, args.api_base)
     else:

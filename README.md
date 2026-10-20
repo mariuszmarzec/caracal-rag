@@ -49,19 +49,44 @@ unset CARACAL_EMBEDDING_API_KEY
 
 ## Commands
 
-- `caracal-rag setup [--model <family>] [--api-base <url>]`: configure the model, endpoint and secrets under `~/.caracal`; the API key is requested via hidden prompt if it is not already configured. Avoid passing keys as command-line arguments.
-- `caracal-rag check`: validate active configuration & connectivity to FreeLLMAPI and Chroma.
+- `caracal-rag setup [--model <family>] [--api-base <url>]`: configure the model, endpoint and secrets under `~/.caracal`; the API key and the access token are requested via hidden prompts if they are not already configured. Avoid passing keys or tokens as command-line arguments.
+- `caracal-rag check`: validate active configuration & connectivity to FreeLLMAPI and Chroma. Also validates the access-token policy, so a deployment whose protected interface would start broken is caught before the MCP server is started.
 - `caracal-rag index [--source <name>]`: build/refresh the active index under `~/.caracal`.
-- `caracal-rag mcp`: start the stdio MCP server for agent integration.
+- `caracal-rag mcp`: start the MCP server for agent integration. The default transport is authenticated HTTP; stdio is an explicit opt-in local/unauthenticated interface.
 
 ## Configuration & Secrets
 
 The active configuration lives under `~/.caracal`:
-- `~/.caracal/config/sources.yaml` — embedding model, base URL, Chroma host/port, and knowledge sources. (No secrets).
-- `~/.caracal/config/secrets.yaml` — credentials (`embedding.api_key`), protected with file mode `0600`.
+- `~/.caracal/config/sources.yaml` — embedding model, base URL, Chroma host/port, knowledge sources, and the `access_token` policy. (No secrets).
+- `~/.caracal/config/secrets.yaml` — credentials (`embedding.api_key` and `access_token.token`), protected with file mode `0600`.
 - `~/.caracal/index/manifest.json` — durable record of the collection and embedding space used to build the index.
 
-Secrets can also be supplied via the environment variable `CARACAL_EMBEDDING_API_KEY`, which takes precedence over `secrets.yaml`.
+Secrets can also be supplied via environment variables, which take precedence over `secrets.yaml`:
+- `CARACAL_EMBEDDING_API_KEY` — the FreeLLMAPI API key.
+- `CARACAL_ACCESS_TOKEN` — the access token that protects the MCP interface.
+- `CARACAL_MCP_TRANSPORT` — `http` (default, authenticated) or `stdio` transport for the MCP server.
+- `CARACAL_MCP_HOST`, `CARACAL_MCP_PORT`, `CARACAL_MCP_PATH` — bind address for the `http` transport.
+
+### Access Token Protection
+
+The MCP interface is protected by an access token. The raw token is **never** a tool argument, tool schema field, or tool result: it is supplied out-of-band through the transport, so it cannot leak into a model-visible surface, LLM transcript, or shell history.
+
+- **http transport** (the default): the interface is exposed behind the MCP SDK's `BearerAuthMiddleware`, which demands an `Authorization: Bearer <token>` header on every request. Missing or invalid tokens are rejected with `401`; valid tokens authenticate the session.
+- **stdio transport** (explicit opt-in): a local, unauthenticated interface. It is intended for a trusted host where the agent process itself is the only caller. No auth channel exists on stdio, so the token is not presented at all. Do not run stdio where the host is shared or untrusted.
+
+The policy is configured in `sources.yaml`:
+
+```yaml
+mcp:
+  transport: http        # default authenticated; 'stdio' is an explicit opt-in local/unauthenticated interface
+  host: 127.0.0.1        # http bind host
+  port: 8000             # http bind port
+  path: /mcp             # http mount path
+access_token:
+  enabled: true   # set to false only to explicitly disable protection
+```
+
+The token value itself is never written into `sources.yaml`; it lives in `secrets.yaml` under `access_token.token` (or in the `CARACAL_ACCESS_TOKEN` environment variable). It must be at least 8 characters long. Comparisons are constant-time via `secrets.compare_digest`, and errors never echo the configured token.
 
 ### FreeLLMAPI Embedding Models
 
@@ -100,13 +125,27 @@ caracal-rag index --source fiteo-docs
 
 ## Running the RAG Server (MCP)
 
-Start the persistent stdio MCP server:
+Start the MCP server. The default is the authenticated HTTP transport, which demands a valid `Authorization: Bearer <token>` header on every request:
 
 ```bash
 caracal-rag mcp
 ```
 
-The MCP server exposes the `search_api(query, top_k=5)` tool to connected agents (OpenCode, OpenClaw, etc.).
+Or run the local, unauthenticated stdio interface as an explicit opt-in for a trusted host:
+
+```bash
+caracal-rag mcp --transport stdio
+# or set CARACAL_MCP_TRANSPORT=stdio
+```
+
+To change the bind address of the HTTP transport:
+
+```bash
+caracal-rag mcp --transport http --host 127.0.0.1 --port 8000 --path /mcp
+# or set CARACAL_MCP_TRANSPORT=http and the bind env vars
+```
+
+The MCP server exposes the `search_api(query, top_k=5)` tool to connected agents (OpenCode, OpenClaw, etc.). The raw access token is never a tool argument: on the `http` transport every request must present a valid `Authorization: Bearer <token>` header, and missing or invalid tokens are rejected with `401`. On the `stdio` transport the interface is local and unauthenticated by design.
 
 ## Indexing Consistency & Manifest Validation
 
@@ -130,18 +169,19 @@ git pull
 
 The installer updates the package in `~/.caracal/venv` from the checkout, but preserves `~/.caracal/config/sources.yaml`, `secrets.yaml`, and the local index manifest. The installed runtime uses the virtual environment and active configuration under `~/.caracal`; it does not import Python modules from the checkout.
 
-### Rotate the FreeLLMAPI key
+### Rotate credentials
 
-Run `caracal-rag setup` and enter the new key at the hidden prompt. In a scripted shell, use a non-echoing prompt rather than putting the key in a literal command:
+Run `caracal-rag setup` and enter the new key and token at the hidden prompts. In a scripted shell, use non-echoing prompts rather than putting secrets in literal commands:
 
 ```bash
 read -rsp "New FreeLLMAPI API key: " CARACAL_EMBEDDING_API_KEY; echo
-export CARACAL_EMBEDDING_API_KEY
+read -rsp "New access token: " CARACAL_ACCESS_TOKEN; echo
+export CARACAL_EMBEDDING_API_KEY CARACAL_ACCESS_TOKEN
 caracal-rag setup --model bge-m3
-unset CARACAL_EMBEDDING_API_KEY
+unset CARACAL_EMBEDDING_API_KEY CARACAL_ACCESS_TOKEN
 ```
 
-The CLI stores the key in `~/.caracal/config/secrets.yaml` with mode `0600`. Alternatively, `CARACAL_EMBEDDING_API_KEY` can be supplied to the runtime environment; do not place the key in scripts committed to Git or in command-line arguments.
+The CLI stores the key and the token in `~/.caracal/config/secrets.yaml` with mode `0600`. Alternatively, `CARACAL_EMBEDDING_API_KEY` and `CARACAL_ACCESS_TOKEN` can be supplied to the runtime environment; do not place secrets in scripts committed to Git or in command-line arguments. Rotating a credential is safe: existing configuration and the other secret are preserved.
 
 ### Change the embedding model safely
 

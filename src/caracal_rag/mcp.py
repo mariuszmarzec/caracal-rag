@@ -6,6 +6,7 @@ from typing import Any
 from mcp.server import Server
 from mcp.types import TextContent, Tool
 
+from caracal_rag.auth import SimpleTokenVerifier
 from caracal_rag.config import AppConfig
 from caracal_rag.embeddings import embed_texts
 from caracal_rag.vectorstore import (
@@ -15,6 +16,12 @@ from caracal_rag.vectorstore import (
     ensure_collection,
     search_chunks,
 )
+
+#: Name of the protected interface. The token is NEVER a tool argument: it is
+#: supplied out-of-band through the HTTP ``Authorization`` header on the
+#: authenticated transport, so it never reaches a model-visible tool schema,
+#: tool argument, tool result, or LLM-facing transcript.
+PROTECTED_INTERFACE_NAME = "caracal-rag"
 
 
 @dataclass
@@ -35,45 +42,104 @@ class CaracalMcpServer:
             ssl=config.chroma.ssl,
         )
         self.collection = ensure_collection(self.client, config.chroma.collection)
-        self.server = Server("caracal-rag")
+        self.server = Server(PROTECTED_INTERFACE_NAME)
+        self._register_handlers(self.server)
 
-        @self.server.list_tools()
-        async def list_tools() -> list[Tool]:
-            return [
-                Tool(
-                    name="search_api",
-                    description="Semantic search over indexed documentation chunks.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Search query.",
+    def _register_handlers(self, server):
+        # The SDK 1.x ``Server`` exposes ``list_tools``/``call_tool`` as
+        # decorators; 2.x removed them in favour of ``add_request_handler``.
+        list_tools_attr = getattr(server, "list_tools", None)
+        call_tool_attr = getattr(server, "call_tool", None)
+        if callable(list_tools_attr) and callable(call_tool_attr):
+            @list_tools_attr()
+            async def list_tools() -> list[Tool]:
+                return [
+                    Tool(
+                        name="search_api",
+                        description=(
+                            "Semantic search over indexed documentation chunks. "
+                            "Protected: every call must be authenticated through the "
+                            "interface's out-of-band access-token channel."
+                        ),
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string", "description": "Search query."},
+                                "top_k": {
+                                    "type": "integer",
+                                    "description": "Number of results.",
+                                    "default": 5,
+                                },
                             },
-                            "top_k": {
-                                "type": "integer",
-                                "description": "Number of results.",
-                                "default": 5,
-                            },
+                            "required": ["query"],
                         },
-                        "required": ["query"],
-                    },
-                ),
-            ]
+                    ),
+                ]
 
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-            if name == "search_api":
-                query = arguments.get("query")
-                top_k = int(arguments.get("top_k", 5))
-                results = self.search(query=query, top_k=top_k)
-                return [TextContent(type="text", text=self._format(results))]
-            raise ValueError(f"Unknown tool: {name}")
+            @call_tool_attr()
+            async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+                if name == "search_api":
+                    query = arguments.get("query")
+                    top_k = int(arguments.get("top_k", 5))
+                    results = self.search(query=query, top_k=top_k)
+                    return [TextContent(type="text", text=self._format(results))]
+                raise ValueError(f"Unknown tool: {name}")
+        else:
+            # mcp 2.x: register request handlers via add_request_handler. The
+            # result/request param models live in ``mcp.types`` (NOT
+            # ``mcp.server.types``, which does not exist in any shipped SDK).
+            from mcp.types import (
+                CallToolRequestParams,
+                CallToolResult,
+                ListToolsResult,
+                PaginatedRequestParams,
+            )
+
+            async def list_tools_handler(
+                context, params: PaginatedRequestParams
+            ) -> ListToolsResult:
+                return ListToolsResult(tools=[
+                    Tool(
+                        name="search_api",
+                        description=(
+                            "Semantic search over indexed documentation chunks. "
+                            "Protected: every call must be authenticated through the "
+                            "interface's out-of-band access-token channel."
+                        ),
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string", "description": "Search query."},
+                                "top_k": {
+                                    "type": "integer",
+                                    "description": "Number of results.",
+                                    "default": 5,
+                                },
+                            },
+                            "required": ["query"],
+                        },
+                    ),
+                ])
+
+            async def call_tool_handler(
+                context, params: CallToolRequestParams
+            ) -> CallToolResult:
+                name = params.name
+                arguments = params.arguments or {}
+                if name == "search_api":
+                    query = arguments.get("query")
+                    top_k = int(arguments.get("top_k", 5))
+                    results = self.search(query=query, top_k=top_k)
+                    return CallToolResult(
+                        content=[TextContent(type="text", text=self._format(results))],
+                        is_error=False,
+                    )
+                raise ValueError(f"Unknown tool: {name}")
+
+            server.add_request_handler("tools/list", PaginatedRequestParams, list_tools_handler)
+            server.add_request_handler("tools/call", CallToolRequestParams, call_tool_handler)
 
     def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
-        # Never mix query vectors from the current model with stored vectors
-        # from a different embedding space -- the similarity scores would be
-        # meaningless. Fail with actionable rebuild guidance instead.
         assert_embedding_model_consistent(self.collection, self.embedding_model)
         embedding = embed_texts(
             [query],
@@ -81,10 +147,6 @@ class CaracalMcpServer:
             api_key=self.config.embedding.api_key,
             model=self.embedding_model,
         )[0]
-        # The query vector's dimension is checked against the stored vectors too:
-        # two models that happen to agree on family but differ in dimensionality
-        # still produce incompatible spaces, and similarity scores across them
-        # are meaningless.
         assert_embedding_dim_consistent(self.collection, len(embedding))
         response = search_chunks(self.collection, embedding, top_k=top_k)
         return self._parse_results(response)
@@ -94,15 +156,10 @@ class CaracalMcpServer:
         results: list[SearchResult] = []
         documents = response.get("documents") or []
         metadatas = response.get("metadatas") or []
-
-        # Chroma nests the top-k results: documents=[[...top-k texts...]],
-        # metadatas=[[...top-k metadata...]]. Flatten the outer array so every
-        # result is returned instead of only the first nested item.
         if documents and isinstance(documents[0], list):
             documents = [item for sublist in documents for item in sublist]
         if metadatas and isinstance(metadatas[0], list):
             metadatas = [item for sublist in metadatas for item in sublist]
-
         for doc_text, metadata in zip(documents, metadatas):
             if isinstance(doc_text, list):
                 doc_text = doc_text[0] if doc_text else ""
@@ -128,3 +185,89 @@ class CaracalMcpServer:
             lines.append(item.content)
             lines.append("---")
         return "\n".join(lines)
+
+    def http_app(self):
+        """Return the Starlette ASGI app for the authenticated HTTP transport.
+
+        The SDK's StreamableHTTP transport is wrapped with the SDK's
+        ``BearerAuthMiddleware`` and a :class:`SimpleTokenVerifier`, so every
+        request must present a valid ``Authorization: Bearer <token>`` header.
+        The token is consumed from the HTTP request, never from a tool
+        argument, so the secret never appears in the model-visible tool schema,
+        tool arguments, tool results, or LLM-facing transcript.
+        """
+        from mcp.server.auth.settings import AuthSettings
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        host = self.config.mcp.host
+        port = self.config.mcp.port
+        path = self.config.mcp.path
+        if host in {"127.0.0.1", "localhost", "::1"}:
+            transport_security = None
+        else:
+            transport_security = TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=[host, f"{host}:*"],
+                allowed_origins=[f"http://{host}", f"http://{host}:*"],
+            )
+        auth_kwargs = dict(
+            issuer_url=f"http://{host}:{port}",
+            resource_server_url=f"http://{host}:{port}{path}",
+        )
+        # validate_token_resource was added in mcp 2.x; 1.x silently ignores
+        # unknown kwargs only if extra='ignore' (it is not), so gate it.
+        if "validate_token_resource" in AuthSettings.model_fields:
+            auth_kwargs["validate_token_resource"] = True
+        auth_settings = AuthSettings(**auth_kwargs)
+        token_verifier = SimpleTokenVerifier(
+            self.config.access_token,
+            resource=auth_settings.resource_server_url,
+        )
+
+        # 1.x ships ``FastMCP`` (which owns its own low-level Server and is the
+        # only way to mount the bearer auth middleware there); 2.x removed
+        # FastMCP and the low-level ``Server`` itself accepts the auth kwargs.
+        try:
+            from mcp.server.fastmcp import FastMCP
+        except Exception:
+            return self.server.streamable_http_app(
+                streamable_http_path=path,
+                host=host,
+                transport_security=transport_security,
+                auth=auth_settings,
+                token_verifier=token_verifier,
+            )
+
+        fastmcp = FastMCP(
+            name=PROTECTED_INTERFACE_NAME,
+            token_verifier=token_verifier,
+            auth=auth_settings,
+            host=host,
+            port=port,
+            transport_security=transport_security,
+        )
+        fastmcp._mcp_server = self.server  # noqa: SLF001
+        return fastmcp.streamable_http_app()
+
+    async def run_http_async(self) -> None:
+        import uvicorn
+
+        app = self.http_app()
+        config = uvicorn.Config(
+            app,
+            host=self.config.mcp.host,
+            port=self.config.mcp.port,
+            log_level="info",
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
+
+    async def run_stdio_async(self) -> None:
+        from mcp.server.stdio import stdio_server
+
+        async with stdio_server() as (read_stream, write_stream):
+            await self.server.run(
+                read_stream,
+                write_stream,
+                self.server.create_initialization_options(),
+            )

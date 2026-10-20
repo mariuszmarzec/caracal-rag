@@ -122,7 +122,10 @@ def _make_server(monkeypatch: pytest.MonkeyPatch) -> CaracalMcpServer:
     monkeypatch.setattr("caracal_rag.mcp._chroma_client", lambda *args, **kwargs: FakeChroma())
     monkeypatch.setattr("caracal_rag.mcp.embed_texts", lambda texts, **kwargs: [[0.1, 0.2]])
     monkeypatch.setattr("caracal_rag.mcp.Server", FakeServer)
-    return CaracalMcpServer(AppConfig.from_yaml("config/sources.example.yaml"))
+    config = AppConfig.from_yaml("config/sources.example.yaml")
+    # The raw token is no longer a tool argument: it is supplied out-of-band
+    # through the HTTP transport, so the low-level handlers never see it.
+    return CaracalMcpServer(config)
 
 
 def test_search_api_returns_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -175,7 +178,7 @@ def test_call_tool_unknown_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     handler = server.server.call_tool_handler
     assert handler is not None
     with pytest.raises(ValueError, match="Unknown tool"):
-        asyncio.run(handler("bogus", {}))
+        asyncio.run(handler("bogus", {"access_token": "test-token"}))
 
 
 def test_parse_results_returns_all_top_k(monkeypatch: pytest.MonkeyPatch) -> None:
