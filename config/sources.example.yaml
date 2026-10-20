@@ -14,11 +14,14 @@ chroma:
 # valid token; there is no silent unauthenticated fallback.
 #
 # The raw token is never a tool argument: it is supplied out-of-band through
-# the transport. `mcp.transport: http` exposes the interface behind the SDK's
-# Bearer auth middleware (Authorization: Bearer <token>); `stdio` (the default)
-# is a local, unauthenticated interface for a trusted host.
+# the transport. `mcp.transport: http` (the default) exposes the interface
+# behind the SDK's Bearer auth middleware (Authorization: Bearer <token>).
+# `stdio` is an explicit opt-in, LOCAL AND UNAUTHENTICATED interface for a
+# trusted host where the agent process is the only caller; it has no auth
+# channel, so the token is not presented at all. Do not run stdio where the
+# host is shared or untrusted.
 mcp:
-  transport: stdio
+  transport: http
   host: 127.0.0.1
   port: 8000
   path: /mcp

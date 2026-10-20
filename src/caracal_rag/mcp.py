@@ -43,51 +43,100 @@ class CaracalMcpServer:
         )
         self.collection = ensure_collection(self.client, config.chroma.collection)
         self.server = Server(PROTECTED_INTERFACE_NAME)
+        self._register_handlers(self.server)
 
-        @self.server.list_tools()
-        async def list_tools() -> list[Tool]:
-            return [
-                Tool(
-                    name="search_api",
-                    description=(
-                        "Semantic search over indexed documentation chunks. "
-                        "Protected: every call must be authenticated through the "
-                        "interface's out-of-band access-token channel."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Search query.",
+    def _register_handlers(self, server):
+        list_tools_attr = getattr(server, "list_tools", None)
+        call_tool_attr = getattr(server, "call_tool", None)
+        if callable(list_tools_attr) and callable(call_tool_attr):
+            @list_tools_attr()
+            async def list_tools() -> list[Tool]:
+                return [
+                    Tool(
+                        name="search_api",
+                        description=(
+                            "Semantic search over indexed documentation chunks. "
+                            "Protected: every call must be authenticated through the "
+                            "interface's out-of-band access-token channel."
+                        ),
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string", "description": "Search query."},
+                                "top_k": {
+                                    "type": "integer",
+                                    "description": "Number of results.",
+                                    "default": 5,
+                                },
                             },
-                            "top_k": {
-                                "type": "integer",
-                                "description": "Number of results.",
-                                "default": 5,
-                            },
+                            "required": ["query"],
                         },
-                        "required": ["query"],
-                    },
-                ),
-            ]
+                    ),
+                ]
 
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-            # Authentication happens at the transport boundary (HTTP Bearer
-            # middleware) before this handler runs, so the raw secret is never
-            # present in the model-generated arguments. Dispatch directly.
-            if name == "search_api":
-                query = arguments.get("query")
-                top_k = int(arguments.get("top_k", 5))
-                results = self.search(query=query, top_k=top_k)
-                return [TextContent(type="text", text=self._format(results))]
-            raise ValueError(f"Unknown tool: {name}")
+            @call_tool_attr()
+            async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+                if name == "search_api":
+                    query = arguments.get("query")
+                    top_k = int(arguments.get("top_k", 5))
+                    results = self.search(query=query, top_k=top_k)
+                    return [TextContent(type="text", text=self._format(results))]
+                raise ValueError(f"Unknown tool: {name}")
+        else:
+            # Fallback for mcp 2.x server
+            from mcp.server.types import (
+                CallToolRequestParams,
+                CallToolResult,
+                ListToolsResult,
+                PaginatedRequestParams,
+            )
+
+            async def list_tools_handler(
+                context, params: PaginatedRequestParams
+            ) -> ListToolsResult:
+                return ListToolsResult(tools=[
+                    Tool(
+                        name="search_api",
+                        description=(
+                            "Semantic search over indexed documentation chunks. "
+                            "Protected: every call must be authenticated through the "
+                            "interface's out-of-band access-token channel."
+                        ),
+                        inputSchema={
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string", "description": "Search query."},
+                                "top_k": {
+                                    "type": "integer",
+                                    "description": "Number of results.",
+                                    "default": 5,
+                                },
+                            },
+                            "required": ["query"],
+                        },
+                    ),
+                ])
+
+            async def call_tool_handler(
+                context, params: CallToolRequestParams
+            ) -> CallToolResult:
+                data = params.data
+                name = data.get("name")
+                arguments = data.get("arguments")
+                if name == "search_api":
+                    query = arguments.get("query")
+                    top_k = int(arguments.get("top_k", 5))
+                    results = self.search(query=query, top_k=top_k)
+                    return CallToolResult(
+                        tool_name=name,
+                        result=[TextContent(type="text", text=self._format(results))]
+                    )
+                raise ValueError(f"Unknown tool: {name}")
+
+            server.add_request_handler("tools/list", PaginatedRequestParams, list_tools_handler)
+            server.add_request_handler("tools/call", CallToolRequestParams, call_tool_handler)
 
     def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
-        # Never mix query vectors from the current model with stored vectors
-        # from a different embedding space -- the similarity scores would be
-        # meaningless. Fail with actionable rebuild guidance instead.
         assert_embedding_model_consistent(self.collection, self.embedding_model)
         embedding = embed_texts(
             [query],
@@ -95,10 +144,6 @@ class CaracalMcpServer:
             api_key=self.config.embedding.api_key,
             model=self.embedding_model,
         )[0]
-        # The query vector's dimension is checked against the stored vectors too:
-        # two models that happen to agree on family but differ in dimensionality
-        # still produce incompatible spaces, and similarity scores across them
-        # are meaningless.
         assert_embedding_dim_consistent(self.collection, len(embedding))
         response = search_chunks(self.collection, embedding, top_k=top_k)
         return self._parse_results(response)
@@ -108,15 +153,10 @@ class CaracalMcpServer:
         results: list[SearchResult] = []
         documents = response.get("documents") or []
         metadatas = response.get("metadatas") or []
-
-        # Chroma nests the top-k results: documents=[[...top-k texts...]],
-        # metadatas=[[...top-k metadata...]]. Flatten the outer array so every
-        # result is returned instead of only the first nested item.
         if documents and isinstance(documents[0], list):
             documents = [item for sublist in documents for item in sublist]
         if metadatas and isinstance(metadatas[0], list):
             metadatas = [item for sublist in metadatas for item in sublist]
-
         for doc_text, metadata in zip(documents, metadatas):
             if isinstance(doc_text, list):
                 doc_text = doc_text[0] if doc_text else ""
@@ -154,15 +194,14 @@ class CaracalMcpServer:
         tool arguments, tool results, or LLM-facing transcript.
         """
         from mcp.server.auth.settings import AuthSettings
-        from mcp.server.fastmcp import FastMCP
         from mcp.server.transport_security import TransportSecuritySettings
+        try:
+            from mcp.server.fastmcp import FastMCP
+        except Exception:
+            from mcp.server.mcpserver import MCPServer as FastMCP
 
         host = self.config.mcp.host
         port = self.config.mcp.port
-        # DNS rebinding protection is enabled by the SDK for localhost binds
-        # and already permits 127.0.0.1/localhost/::1. When the server binds
-        # to a different host, allow that host explicitly instead of dropping
-        # the protection entirely.
         if host in {"127.0.0.1", "localhost", "::1"}:
             transport_security = None
         else:
@@ -171,7 +210,6 @@ class CaracalMcpServer:
                 allowed_hosts=[host, f"{host}:*"],
                 allowed_origins=[f"http://{host}", f"http://{host}:*"],
             )
-
         fastmcp = FastMCP(
             name=PROTECTED_INTERFACE_NAME,
             token_verifier=SimpleTokenVerifier(self.config.access_token),
@@ -183,16 +221,10 @@ class CaracalMcpServer:
             port=port,
             transport_security=transport_security,
         )
-        # Reuse the already-registered low-level handlers by mounting the
-        # underlying MCP server on the FastMCP app. The handlers are already
-        # registered on ``self.server`` in __init__; do NOT call
-        # ``_setup_handlers`` because that would rebind list_tools/call_tool to
-        # FastMCP's own (empty) tool manager.
         fastmcp._mcp_server = self.server  # noqa: SLF001
         return fastmcp.streamable_http_app()
 
     async def run_http_async(self) -> None:
-        """Run the authenticated StreamableHTTP MCP server."""
         import uvicorn
 
         app = self.http_app()
@@ -206,7 +238,6 @@ class CaracalMcpServer:
         await server.serve()
 
     async def run_stdio_async(self) -> None:
-        """Run the stdio MCP server (local, no out-of-band auth channel)."""
         from mcp.server.stdio import stdio_server
 
         async with stdio_server() as (read_stream, write_stream):

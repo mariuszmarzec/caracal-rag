@@ -18,9 +18,9 @@ EMBEDDING_API_KEY_ENV = "CARACAL_EMBEDDING_API_KEY"
 ACCESS_TOKEN_ENV = "CARACAL_ACCESS_TOKEN"
 
 #: Environment variable selecting the MCP server transport. The default is
-#: ``stdio`` (the transport that needs no port); ``http`` runs the SDK's
-#: StreamableHTTP server behind the SDK's Bearer-auth middleware, which is the
-#: only transport that can demand the token out-of-band from a request header.
+#: ``http`` (the authenticated interface); ``stdio`` runs the SDK's stdio
+#: transport, which is a local, unauthenticated interface for a trusted host
+#: only.
 MCP_TRANSPORT_ENV = "CARACAL_MCP_TRANSPORT"
 #: Environment variable for the HTTP MCP server bind host.
 MCP_HOST_ENV = "CARACAL_MCP_HOST"
@@ -31,11 +31,12 @@ MCP_PATH_ENV = "CARACAL_MCP_PATH"
 
 DEFAULT_EMBEDDING_API_BASE = "http://localhost:3001/v1"
 
-#: Default MCP transport: ``stdio`` is the zero-config local mode, but it has no
-#: out-of-band caller-authentication channel, so a token check on stdio can
-#: only ever be a tool-argument check (which leaks the secret into the
-#: model-visible transcript). ``http`` is the authenticated interface.
-DEFAULT_MCP_TRANSPORT = "stdio"
+#: Default MCP transport: ``http`` is the authenticated interface. ``stdio`` is
+#: the zero-config local mode, but it has no out-of-band caller-authentication
+#: channel, so a token check on stdio can only ever be a tool-argument check
+#: (which leaks the secret into the model-visible transcript); stdio is an
+#: explicit opt-in for a trusted host only.
+DEFAULT_MCP_TRANSPORT = "http"
 #: Default bind host for the HTTP MCP server.
 DEFAULT_MCP_HOST = "127.0.0.1"
 #: Default bind port for the HTTP MCP server.
@@ -209,7 +210,8 @@ class McpTransportConfig:
         if self.transport not in {"stdio", "http"}:
             raise ConfigError(
                 f"Unknown MCP transport {self.transport!r}. Valid transports are "
-                "'stdio' (default, local) and 'http' (authenticated interface). "
+                "'stdio' (local, unauthenticated) and 'http' "
+                "(authenticated interface, the default). "
                 f"Set {MCP_TRANSPORT_ENV} or 'mcp.transport' in the active config."
             )
 

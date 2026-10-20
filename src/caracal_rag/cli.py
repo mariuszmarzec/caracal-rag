@@ -78,9 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--transport",
         default=None,
         choices=["stdio", "http"],
-        help="MCP transport (default: $CARACAL_MCP_TRANSPORT, then 'stdio'). "
-        "stdio is a local, unauthenticated interface; http exposes the "
-        "interface behind an out-of-band Bearer access-token channel.",
+        help="MCP transport (default: $CARACAL_MCP_TRANSPORT, then 'http'). "
+        "http exposes the interface behind an out-of-band Bearer access-token "
+        "channel; stdio is a local, unauthenticated interface for a trusted host.",
     )
     mcp_parser.add_argument(
         "--host",

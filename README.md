@@ -52,7 +52,7 @@ unset CARACAL_EMBEDDING_API_KEY
 - `caracal-rag setup [--model <family>] [--api-base <url>]`: configure the model, endpoint and secrets under `~/.caracal`; the API key and the access token are requested via hidden prompts if they are not already configured. Avoid passing keys or tokens as command-line arguments.
 - `caracal-rag check`: validate active configuration & connectivity to FreeLLMAPI and Chroma. Also validates the access-token policy, so a deployment whose protected interface would start broken is caught before the MCP server is started.
 - `caracal-rag index [--source <name>]`: build/refresh the active index under `~/.caracal`.
-- `caracal-rag mcp`: start the stdio MCP server for agent integration.
+- `caracal-rag mcp`: start the MCP server for agent integration. The default transport is authenticated HTTP; stdio is an explicit opt-in local/unauthenticated interface.
 
 ## Configuration & Secrets
 
@@ -64,21 +64,21 @@ The active configuration lives under `~/.caracal`:
 Secrets can also be supplied via environment variables, which take precedence over `secrets.yaml`:
 - `CARACAL_EMBEDDING_API_KEY` — the FreeLLMAPI API key.
 - `CARACAL_ACCESS_TOKEN` — the access token that protects the MCP interface.
-- `CARACAL_MCP_TRANSPORT` — `stdio` (default) or `http` transport for the MCP server.
+- `CARACAL_MCP_TRANSPORT` — `http` (default, authenticated) or `stdio` transport for the MCP server.
 - `CARACAL_MCP_HOST`, `CARACAL_MCP_PORT`, `CARACAL_MCP_PATH` — bind address for the `http` transport.
 
 ### Access Token Protection
 
 The MCP interface is protected by an access token. The raw token is **never** a tool argument, tool schema field, or tool result: it is supplied out-of-band through the transport, so it cannot leak into a model-visible surface, LLM transcript, or shell history.
 
-- **stdio transport** (the default): a local, unauthenticated interface. It is intended for a trusted host where the agent process itself is the only caller. No auth channel exists on stdio, so the token is not presented at all.
-- **http transport**: the interface is exposed behind the MCP SDK's `BearerAuthMiddleware`, which demands an `Authorization: Bearer <token>` header on every request. Missing or invalid tokens are rejected with `401`; valid tokens authenticate the session.
+- **http transport** (the default): the interface is exposed behind the MCP SDK's `BearerAuthMiddleware`, which demands an `Authorization: Bearer <token>` header on every request. Missing or invalid tokens are rejected with `401`; valid tokens authenticate the session.
+- **stdio transport** (explicit opt-in): a local, unauthenticated interface. It is intended for a trusted host where the agent process itself is the only caller. No auth channel exists on stdio, so the token is not presented at all. Do not run stdio where the host is shared or untrusted.
 
 The policy is configured in `sources.yaml`:
 
 ```yaml
 mcp:
-  transport: http        # or 'stdio'
+  transport: http        # default authenticated; 'stdio' is an explicit opt-in local/unauthenticated interface
   host: 127.0.0.1        # http bind host
   port: 8000             # http bind port
   path: /mcp             # http mount path
@@ -125,13 +125,20 @@ caracal-rag index --source fiteo-docs
 
 ## Running the RAG Server (MCP)
 
-Start the persistent stdio MCP server (local, unauthenticated interface):
+Start the MCP server. The default is the authenticated HTTP transport, which demands a valid `Authorization: Bearer <token>` header on every request:
 
 ```bash
 caracal-rag mcp
 ```
 
-Or expose the interface behind an out-of-band Bearer access-token channel:
+Or run the local, unauthenticated stdio interface as an explicit opt-in for a trusted host:
+
+```bash
+caracal-rag mcp --transport stdio
+# or set CARACAL_MCP_TRANSPORT=stdio
+```
+
+To change the bind address of the HTTP transport:
 
 ```bash
 caracal-rag mcp --transport http --host 127.0.0.1 --port 8000 --path /mcp
