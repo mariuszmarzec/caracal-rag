@@ -35,7 +35,20 @@ fi
     echo "ERROR: virtual environment was not created at $VENV." >&2
     exit 1
 }
-"$VENV/bin/python" -m pip install --upgrade --force-reinstall "$REPO_ROOT"
+# Select the lock for the interpreter that actually runs the installed environment.
+# This also handles updates where CARACAL_PYTHON differs from an existing venv.
+PYTHON_VERSION="$("$VENV/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+PYTHON_TAG="${PYTHON_VERSION//./}"
+CONSTRAINTS_FILE="${REPO_ROOT}/constraints-py${PYTHON_TAG}.lock"
+if [[ ! -f "$CONSTRAINTS_FILE" ]]; then
+    echo "ERROR: no locked dependency set is available for Python $PYTHON_VERSION." >&2
+    echo "Supported interpreter minors: 3.10, 3.11, 3.12, 3.13, 3.14." >&2
+    echo "Add and verify constraints-py${PYTHON_TAG}.lock before installing with this Python." >&2
+    exit 1
+fi
+# PIP_CONSTRAINT is inherited by PEP 517 build-isolation subprocesses; -c
+# also constrains the main install resolution. Keep build/runtime/test versions aligned.
+PIP_CONSTRAINT="$CONSTRAINTS_FILE" "$VENV/bin/python" -m pip install --constraint "$CONSTRAINTS_FILE" --upgrade --force-reinstall "$REPO_ROOT"
 
 # Seed config only on first install. Never repair/replace an existing config
 # automatically: a malformed file may contain valuable user-defined settings.
