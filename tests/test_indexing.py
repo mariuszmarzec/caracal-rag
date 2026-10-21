@@ -1150,7 +1150,9 @@ def test_failed_promotion_hides_staging_and_retry_reconciles(
 
 
 
-def test_listing_failure_never_reconciles_or_reports_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_listing_failure_never_reconciles_or_reports_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A failed inventory keeps all old rows and marks the run incomplete."""
     from caracal_rag.indexing import Indexer
 
