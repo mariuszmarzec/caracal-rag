@@ -327,6 +327,28 @@ def _prepare(tmp_path: Path) -> FakeEnv:
     )
 
 
+def _assert_existing_active_venv_works(env: FakeEnv) -> None:
+    """The old installed CLI remains runnable after an aborted candidate update."""
+    active = env.caracal_home / "venv"
+    assert active.is_dir()
+    assert not active.is_symlink(), "failed pre-promotion update must not switch the active venv"
+    assert (active / "bin" / "caracal-rag").is_file()
+    proc = _run(
+        [str(env.fake_cli), "check"],
+        cwd=env.repo,
+        env=dict(env.base_env),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "check ok" in proc.stdout
+
+
+def _assert_no_candidate_generations(env: FakeEnv) -> None:
+    generations = env.caracal_home / "venvs"
+    if generations.exists():
+        leftovers = list(generations.glob("caracal-venv-*"))
+        assert leftovers == [], f"failed candidate generations were not cleaned: {leftovers}"
+
+
 def test_dirty_worktree_blocks_default_update(tmp_path: Path) -> None:
     """A dirty worktree (modified, staged, or untracked) blocks the default
     update before any pull or install."""
@@ -446,6 +468,9 @@ def test_installer_failure_propagates_no_post_install_check(tmp_path: Path) -> N
     assert proc.returncode == 5, f"expected installer exit 5, got {proc.returncode}"
     assert env.install_log.exists()
     env.assert_not_ran(env.check_log)
+    assert "active venv was not changed" in proc.stderr
+    _assert_no_candidate_generations(env)
+    _assert_existing_active_venv_works(env)
 
 
 def test_post_install_check_failure_propagates_nonzero(tmp_path: Path) -> None:
@@ -454,6 +479,9 @@ def test_post_install_check_failure_propagates_nonzero(tmp_path: Path) -> None:
     assert proc.returncode == 9, f"expected check exit 9, got {proc.returncode}"
     assert env.install_log.exists()
     assert env.check_log.exists()
+    assert "previous active venv remains unchanged" in proc.stderr
+    _assert_no_candidate_generations(env)
+    _assert_existing_active_venv_works(env)
 
 
 def test_skip_check_skips_only_post_install_check(tmp_path: Path) -> None:
@@ -501,3 +529,94 @@ def test_real_home_is_never_touched(tmp_path: Path) -> None:
         ) + list(REAL_CARACAL_HOME.rglob("check.log"))
         assert not test_artifacts, f"tests leaked into real home: {test_artifacts}"
     assert str(env.work) == str(tmp_path), "sandbox must stay under tmp_path"
+
+
+
+def test_dependency_install_failure_cleans_candidate_and_keeps_active_venv(
+    tmp_path: Path,
+) -> None:
+    env = _prepare(tmp_path)
+    proc = env.run_update(
+        "--no-pull",
+        extra_env={"INSTALL_FAIL_STAGE": "dependencies"},
+    )
+
+    assert proc.returncode == 5
+    assert "candidate installation failed" in proc.stderr
+    assert env.install_log.exists()
+    env.assert_not_ran(env.check_log)
+    _assert_no_candidate_generations(env)
+    _assert_existing_active_venv_works(env)
+
+
+def test_package_install_failure_after_partial_candidate_keeps_active_venv(
+    tmp_path: Path,
+) -> None:
+    env = _prepare(tmp_path)
+    proc = env.run_update(
+        "--no-pull",
+        extra_env={"INSTALL_FAIL_STAGE": "package"},
+    )
+
+    assert proc.returncode == 6
+    assert "candidate installation failed" in proc.stderr
+    env.assert_not_ran(env.check_log)
+    _assert_no_candidate_generations(env)
+    _assert_existing_active_venv_works(env)
+
+
+def test_missing_candidate_entry_point_refuses_promotion(tmp_path: Path) -> None:
+    env = _prepare(tmp_path)
+    proc = env.run_update("--no-pull", extra_env={"MISSING_ENTRYPOINT": "1"})
+
+    assert proc.returncode != 0
+    assert "did not create" in proc.stderr
+    env.assert_not_ran(env.check_log)
+    _assert_no_candidate_generations(env)
+    _assert_existing_active_venv_works(env)
+
+
+def test_successful_update_promotes_candidate_and_retains_previous_venv(
+    tmp_path: Path,
+) -> None:
+    env = _prepare(tmp_path)
+    previous_cli = (env.caracal_home / "venv" / "bin" / "caracal-rag").read_text(
+        encoding="utf-8"
+    )
+
+    proc = env.run_update("--no-pull")
+
+    active = env.caracal_home / "venv"
+    generations = env.caracal_home / "venvs"
+    assert proc.returncode == 0, proc.stderr
+    assert active.is_symlink()
+    candidate = active.resolve()
+    assert candidate.parent == generations.resolve()
+    assert candidate.name.startswith("caracal-venv-")
+    assert (candidate / "bin" / "python").is_file()
+    assert (candidate / "bin" / "caracal-rag").is_file()
+    legacy = list(generations.glob("caracal-venv-legacy-*"))
+    assert len(legacy) == 1
+    assert (legacy[0] / "bin" / "caracal-rag").read_text(encoding="utf-8") == previous_cli
+    assert "Previous venv retained for rollback" in proc.stdout
+    assert env.check_log.exists()
+    # Stable wrapper must dispatch through the newly active generation.
+    active_check = _run(
+        [str(env.fake_cli), "check"], cwd=env.repo, env=dict(env.base_env)
+    )
+    assert active_check.returncode == 0, active_check.stderr
+    assert "check ok" in active_check.stdout
+
+
+def test_skip_check_still_validates_entry_point_and_promotes_candidate(
+    tmp_path: Path,
+) -> None:
+    env = _prepare(tmp_path)
+    proc = env.run_update("--no-pull", "--skip-check")
+
+    active = env.caracal_home / "venv"
+    assert proc.returncode == 0, proc.stderr
+    assert active.is_symlink()
+    assert (active.resolve() / "bin" / "caracal-rag").is_file()
+    env.assert_not_ran(env.check_log)
+    assert "Skipping candidate connectivity check" in proc.stdout
