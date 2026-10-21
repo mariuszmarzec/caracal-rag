@@ -101,6 +101,14 @@ installer until a matching lock is generated and verified.
 - `caracal-rag index [--source <name>]`: build/refresh the active index under `~/.caracal`.
 - `caracal-rag mcp`: start the MCP server for agent integration. The default transport is authenticated HTTP; stdio is an explicit opt-in local/unauthenticated interface.
 
+### MCP search input and error handling
+
+The `search_api` tool requires `query` to be a non-empty string after trimming whitespace. `top_k` must be a real integer from 1 through 20 inclusive; the default is 5. Booleans, fractional values, numeric strings, null, zero, negatives, and values above 20 are rejected rather than coerced. Invalid arguments return a structured tool error with code `invalid_query` or `invalid_top_k`.
+
+If embedding or Chroma operations fail, the tool returns a generic `search_failed` error with a pointer to `caracal-rag check`. Raw backend exception text is intentionally omitted from tool results because it may include private endpoint details or credentials. After checking connectivity and configuration, retry the request; handled errors should not terminate the MCP server session.
+
+CI runs the real authenticated HTTP transport against the pinned MCP SDK version in the dependency lock (MCP 2.3.0). Deterministic handler tests also exercise the decorator-style API used by the MCP SDK 1.x family, so both handler registration paths share the same validation behavior.
+
 ## Configuration & Secrets
 
 The active configuration lives under `~/.caracal`:
