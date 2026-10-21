@@ -198,9 +198,21 @@ The MCP server exposes the `search_api(query, top_k=5)` tool to connected agents
 
 - **Manifest Pre-flight**: Before indexing or searching, Caracal checks `~/.caracal/index/manifest.json` against the active config. If the configured model differs from the model that built the index, the operation is refused with rebuild guidance to prevent mixing embedding spaces.
 - **Unchanged documents** are skipped.
-- **Changed documents** are refreshed atomically via staging rows and promoted upon success.
-- **Deleted documents** are removed from Chroma.
-- **Transient fetch failures** preserve existing vectors without deleting data.
+- **Changed documents** use per-document staging rows and rollback. A replacement is embedded before the previous committed chunks are changed; temporary rows are marked and excluded from search.
+- **Deleted documents** are reconciled only after a complete source inventory has loaded and every discovered document has indexed successfully. If inventory, embedding, or a Chroma write fails, destructive stale-document reconciliation is skipped. The run as a whole is intentionally not transactional: earlier per-document replacements can already have committed before a later document fails. Rerun indexing after resolving the error to finish reconciliation.
+- A Chroma stale-row delete can be partially applied if the remote fails mid-request. Such rows were identified as stale from a complete successful inventory; current rows are preserved, the run reports failure, the manifest is not updated, and a retry cleans up remaining stale rows.
+- **Transient fetch/listing failures** preserve old rows for documents that were not fully inventoried. Successfully loaded documents may still be refreshed, but the index command reports an incomplete run and does not update the manifest.
+- **Unexpectedly empty sources**: when a source previously has committed chunks but now returns zero documents, indexing aborts before indexing or deleting anything. Check the source path, URL/repository, and branch first. Only for an intentionally empty source whose old rows should be removed, set `allow_empty: true` on that source in `sources.yaml`. For example:
+
+  ```yaml
+  sources:
+    - name: archived-docs
+      type: local
+      path: ./archived-docs
+      allow_empty: true
+  ```
+
+  The default is `allow_empty: false`; the flag is an explicit opt-in to clearing that source when its inventory is empty.
 
 
 ## Updating, rotating credentials, rebuilding and uninstalling
