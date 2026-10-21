@@ -281,3 +281,114 @@ def test_simple_token_verifier_direct(monkeypatch: pytest.MonkeyPatch) -> None:
         assert await misconfigured.verify_token("short") is None
 
     asyncio.run(run())
+
+
+def test_http_handled_search_errors_are_sanitized_and_session_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A handled invalid/backend query returns a tool error; the session stays usable."""
+    app = _make_app(monkeypatch)
+    embed_calls = 0
+    private_details = "Bearer very-private-token api_key=private-key-value"
+
+    def fail_first_embedding(texts, **kwargs):
+        nonlocal embed_calls
+        embed_calls += 1
+        if embed_calls == 1:
+            raise RuntimeError(f"request failed: {private_details}")
+        return [[0.1, 0.2]]
+
+    monkeypatch.setattr(mcp_module, "embed_texts", fail_first_embedding)
+    with _McpClient(app, auth=f"Bearer {TOKEN}") as client:
+        status, _, body = client.post(
+            "/mcp",
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"},
+                },
+            },
+        )
+        assert status == 200, body
+
+        status, _, body = client.post(
+            "/mcp",
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        )
+        assert status == 200, body
+        tools = _parse_sse(body)["result"]["tools"]
+        schema = tools[0]["inputSchema"]
+        assert schema["properties"]["query"]["minLength"] == 1
+        assert schema["properties"]["top_k"]["minimum"] == 1
+        assert schema["properties"]["top_k"]["maximum"] == 20
+
+        status, _, body = client.post(
+            "/mcp",
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "search_api",
+                    "arguments": {"query": "   \n\t"},
+                },
+            },
+        )
+        assert status == 200, body
+        invalid_result = _parse_sse(body)["result"]
+        assert invalid_result["isError"] is True
+        invalid_text = invalid_result["content"][0]["text"]
+        invalid_error = json.loads(invalid_text)["error"]
+        assert invalid_error["code"] == "invalid_query"
+        assert TOKEN not in invalid_text
+
+        status, _, body = client.post(
+            "/mcp",
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "search_api",
+                    "arguments": {"query": "login", "top_k": 5},
+                },
+            },
+        )
+        assert status == 200, body
+        backend_result = _parse_sse(body)["result"]
+        assert backend_result["isError"] is True
+        backend_text = backend_result["content"][0]["text"]
+        backend_error = json.loads(backend_text)["error"]
+        assert backend_error["code"] == "search_failed"
+        assert "caracal-rag check" in backend_error["message"]
+        assert "very-private-token" not in backend_text
+        assert "private-key-value" not in backend_text
+        assert private_details not in backend_text
+        assert TOKEN not in backend_text
+
+        # A handled failure must not poison the running MCP session.
+        status, _, body = client.post(
+            "/mcp",
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "search_api",
+                    "arguments": {"query": "login", "top_k": 20},
+                },
+            },
+        )
+        assert status == 200, body
+        recovered_result = _parse_sse(body)["result"]
+        assert recovered_result.get("isError", False) is False
+        recovered_text = recovered_result["content"][0]["text"]
+        assert "Source: api" in recovered_text
+        assert "Document: login.md" in recovered_text
+        assert TOKEN not in recovered_text
+
+    assert embed_calls == 2
