@@ -160,17 +160,38 @@ class FakeEnv:
 
 
 def _fake_install_sh() -> str:
+    # A deterministic candidate installer. Failure modes are injected at
+    # dependency/package boundaries and may leave partial candidate files behind.
     return (
         "#!/usr/bin/env bash\n"
-        "# FAKE installer: logs the invocation (proving the real install.sh ran)\n"
-        "# and reports the CARACAL_HOME it was passed, then honours an optional\n"
-        "# failure flag so we can test that installer failure propagates.\n"
-        'echo "install invoked; CARACAL_HOME=${CARACAL_HOME:-<unset>}" >> "$INSTALL_LOG"\n'
-        'if [[ "${INSTALL_FAIL:-0}" == "1" ]]; then\n'
-        '    echo "FAKE installer failure (exit 5)" >&2\n'
-        '    exit 5\n'
-        'fi\n'
-        'exit 0\n'
+        "set -Eeuo pipefail\n"
+        'echo "install invoked; CARACAL_HOME=${CARACAL_HOME:-<unset>}; CARACAL_VENV=${CARACAL_VENV:-<unset>}; CARACAL_INSTALL_WRAPPER=${CARACAL_INSTALL_WRAPPER:-<unset>}" >> "$INSTALL_LOG"\n'
+        'VENV="${CARACAL_VENV:?CARACAL_VENV must name the candidate environment}"\n'
+        'mkdir -p "$VENV/bin"\n'
+        "cat >\\"$VENV/bin/python\\" <<'PYTHON'\n"
+        "#!/usr/bin/env bash\n"
+        "exit 0\n"
+        "PYTHON\n"
+        'chmod 0755 "$VENV/bin/python"\n'
+        'if [[ "${INSTALL_FAIL_STAGE:-}" == "dependencies" ]]; then\n'
+        '    echo "FAKE dependency installation failure (exit 5)" >&2\n'
+        "    exit 5\n"
+        "fi\n"
+        'if [[ "${MISSING_ENTRYPOINT:-0}" != "1" ]]; then\n'
+        '    cat >"$VENV/bin/caracal-rag" <<\\'CLI\\'\n'
+        + _fake_cli_script()
+        + "CLI\n"
+        + '    chmod 0755 "$VENV/bin/caracal-rag"\n'
+        + "fi\n"
+        + 'if [[ "${INSTALL_FAIL_STAGE:-}" == "package" ]]; then\n'
+        + '    echo "FAKE package installation failure (exit 6)" >&2\n'
+        + "    exit 6\n"
+        + "fi\n"
+        + 'if [[ "${INSTALL_FAIL:-0}" == "1" ]]; then\n'
+        + '    echo "FAKE installer failure (exit 5)" >&2\n'
+        + "    exit 5\n"
+        + "fi\n"
+        + "exit 0\n"
     )
 
 
