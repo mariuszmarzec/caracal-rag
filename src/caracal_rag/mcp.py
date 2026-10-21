@@ -122,10 +122,10 @@ class CaracalMcpServer:
             @call_tool_attr()
             async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 if name == "search_api":
-                    query = arguments.get("query")
-                    top_k = int(arguments.get("top_k", 5))
-                    results = self.search(query=query, top_k=top_k)
-                    return [TextContent(type="text", text=self._format(results))]
+                    text, is_error = self._execute_search_tool(arguments)
+                    # SDK 1.x returns content blocks only; errors use a
+                    # structured JSON payload so clients can distinguish them.
+                    return [TextContent(type="text", text=text)]
                 raise ValueError(f"Unknown tool: {name}")
         else:
             # mcp 2.x: register request handlers via add_request_handler. The
@@ -176,12 +176,10 @@ class CaracalMcpServer:
                 name = params.name
                 arguments = params.arguments or {}
                 if name == "search_api":
-                    query = arguments.get("query")
-                    top_k = int(arguments.get("top_k", 5))
-                    results = self.search(query=query, top_k=top_k)
+                    text, is_error = self._execute_search_tool(arguments)
                     return CallToolResult(
-                        content=[TextContent(type="text", text=self._format(results))],
-                        is_error=False,
+                        content=[TextContent(type="text", text=text)],
+                        is_error=is_error,
                     )
                 raise ValueError(f"Unknown tool: {name}")
 
