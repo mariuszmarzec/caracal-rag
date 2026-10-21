@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate/check the per-minor Python dependency constraints used by install.sh and CI.
+# Generate/check the per-minor Python dependency constraints used by install.sh and the CI matrix.
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
