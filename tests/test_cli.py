@@ -702,3 +702,36 @@ def test_index_success_writes_dimension_to_manifest(
     assert data["embedding_dim"] == 7
     assert data["embedding_model"] == "bge-m3"
     assert data["document_count"] == 1
+
+
+
+def test_incomplete_index_run_does_not_update_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A partial source inventory must not make CLI write a successful-run manifest."""
+    import caracal_rag.cli as cli_module
+
+    class _Config:
+        embedding = object()
+
+    class _FakeIndexer:
+        def __init__(self, config, source_filter=None, embedding_dim=None):
+            pass
+
+        def run(self):
+            return False
+
+    manifest_writes: list[bool] = []
+    monkeypatch.setattr(cli_module, "load_active_config", lambda config_path=None: _Config())
+    monkeypatch.setattr(cli_module, "_ensure_api_key", lambda config: None)
+    monkeypatch.setattr(cli_module, "_probe_dim", lambda config: 2)
+    monkeypatch.setattr(cli_module, "_assert_index_safe", lambda config, observed_dim=None: None)
+    monkeypatch.setattr(cli_module, "Indexer", _FakeIndexer)
+    monkeypatch.setattr(
+        cli_module,
+        "_write_manifest",
+        lambda *args, **kwargs: manifest_writes.append(True),
+    )
+
+    with pytest.raises(RuntimeError, match="source inventory was incomplete"):
+        run_index(source=None, config_path="unused-test-config.yaml")
+
+    assert manifest_writes == []
