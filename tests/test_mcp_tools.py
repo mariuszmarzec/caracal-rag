@@ -292,3 +292,134 @@ def test_search_refuses_mixed_collection_with_untagged_vectors(
     server = CaracalMcpServer(AppConfig.from_yaml("config/sources.example.yaml"))
     with pytest.raises(ValueError, match="no embedding_model metadata"):
         server.search(query="login", top_k=5)
+
+
+def _call_search_tool(server: CaracalMcpServer, arguments: dict[str, Any]):
+    handler = server.server.call_tool_handler
+    assert handler is not None
+    return asyncio.run(handler("search_api", arguments))
+
+
+def _parse_tool_error(result) -> dict[str, Any]:
+    assert len(result) == 1
+    payload = json.loads(result[0].text)
+    assert "error" in payload
+    return payload["error"]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"query": None},
+        {"query": 123},
+        {"query": ""},
+        {"query": "   \n\t  "},
+    ],
+)
+def test_call_tool_rejects_invalid_queries_without_backend_calls(
+    monkeypatch: pytest.MonkeyPatch, arguments: dict[str, Any]
+) -> None:
+    server = _make_server(monkeypatch)
+    embed_calls: list[Any] = []
+    monkeypatch.setattr(
+        "caracal_rag.mcp.embed_texts",
+        lambda texts, **kwargs: embed_calls.append(texts) or [[0.1, 0.2]],
+    )
+
+    result = _call_search_tool(server, arguments)
+
+    error = _parse_tool_error(result)
+    assert error["code"] == "invalid_query"
+    assert error["message"]
+    assert embed_calls == []
+
+
+@pytest.mark.parametrize("top_k", [True, False, 2.5, "5", None, 0, -1, 21])
+def test_call_tool_rejects_invalid_top_k_without_backend_calls(
+    monkeypatch: pytest.MonkeyPatch, top_k: Any
+) -> None:
+    server = _make_server(monkeypatch)
+    embed_calls: list[Any] = []
+    monkeypatch.setattr(
+        "caracal_rag.mcp.embed_texts",
+        lambda texts, **kwargs: embed_calls.append(texts) or [[0.1, 0.2]],
+    )
+
+    result = _call_search_tool(server, {"query": "login", "top_k": top_k})
+
+    error = _parse_tool_error(result)
+    assert error["code"] == "invalid_top_k"
+    assert "1 and 20" in error["message"]
+    assert embed_calls == []
+
+
+@pytest.mark.parametrize("top_k", [1, 20])
+def test_call_tool_accepts_top_k_bounds_and_trims_query(
+    monkeypatch: pytest.MonkeyPatch, top_k: int
+) -> None:
+    server = _make_server(monkeypatch)
+    embedded_queries: list[list[str]] = []
+    searched_top_k: list[int] = []
+    monkeypatch.setattr(
+        "caracal_rag.mcp.embed_texts",
+        lambda texts, **kwargs: embedded_queries.append(list(texts)) or [[0.1, 0.2]],
+    )
+    monkeypatch.setattr(
+        "caracal_rag.mcp.search_chunks",
+        lambda collection, embedding, top_k=5: (
+            searched_top_k.append(top_k)
+            or {"documents": [[]], "metadatas": [[]], "ids": [[]], "distances": [[]]}
+        ),
+    )
+
+    result = _call_search_tool(server, {"query": "  login \n", "top_k": top_k})
+
+    assert len(result) == 1
+    assert "error" not in json.loads(result[0].text) if result[0].text.startswith("{") else True
+    assert embedded_queries == [["login"]]
+    assert searched_top_k == [top_k]
+
+
+@pytest.mark.parametrize("backend", ["embedding", "chroma"])
+def test_backend_failure_is_sanitized_and_following_request_succeeds(
+    monkeypatch: pytest.MonkeyPatch, backend: str
+) -> None:
+    from caracal_rag.vectorstore import search_chunks as real_search_chunks
+
+    server = _make_server(monkeypatch)
+    calls = 0
+    sensitive_details = "Bearer private-test-token api_key=private-test-key"
+
+    if backend == "embedding":
+        def flaky_embedding(texts, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError(f"backend request failed: {sensitive_details}")
+            return [[0.1, 0.2]]
+
+        monkeypatch.setattr("caracal_rag.mcp.embed_texts", flaky_embedding)
+    else:
+        def flaky_search(collection, embedding, top_k=5):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError(f"backend request failed: {sensitive_details}")
+            return real_search_chunks(collection, embedding, top_k=top_k)
+
+        monkeypatch.setattr("caracal_rag.mcp.search_chunks", flaky_search)
+
+    failed = _call_search_tool(server, {"query": "login"})
+    error = _parse_tool_error(failed)
+    failed_text = failed[0].text
+    assert error["code"] == "search_failed"
+    assert "caracal-rag check" in error["message"]
+    assert "private-test-token" not in failed_text
+    assert "private-test-key" not in failed_text
+    assert sensitive_details not in failed_text
+
+    recovered = _call_search_tool(server, {"query": "login"})
+    assert len(recovered) == 1
+    assert "Source: fiteo-docs" in recovered[0].text
+    assert calls == 2
