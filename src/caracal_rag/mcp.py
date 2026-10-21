@@ -101,11 +101,17 @@ class CaracalMcpServer:
                         inputSchema={
                             "type": "object",
                             "properties": {
-                                "query": {"type": "string", "description": "Search query."},
+                                "query": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Non-empty search query.",
+                                },
                                 "top_k": {
                                     "type": "integer",
-                                    "description": "Number of results.",
-                                    "default": 5,
+                                    "minimum": 1,
+                                    "maximum": MAX_TOP_K,
+                                    "description": f"Number of results (1-{MAX_TOP_K}).",
+                                    "default": DEFAULT_TOP_K,
                                 },
                             },
                             "required": ["query"],
@@ -146,11 +152,17 @@ class CaracalMcpServer:
                         inputSchema={
                             "type": "object",
                             "properties": {
-                                "query": {"type": "string", "description": "Search query."},
+                                "query": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Non-empty search query.",
+                                },
                                 "top_k": {
                                     "type": "integer",
-                                    "description": "Number of results.",
-                                    "default": 5,
+                                    "minimum": 1,
+                                    "maximum": MAX_TOP_K,
+                                    "description": f"Number of results (1-{MAX_TOP_K}).",
+                                    "default": DEFAULT_TOP_K,
                                 },
                             },
                             "required": ["query"],
