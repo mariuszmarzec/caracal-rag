@@ -10,7 +10,6 @@ import os
 import subprocess
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKUP_SCRIPT = REPO_ROOT / "backup.sh"
 RESTORE_SCRIPT = REPO_ROOT / "restore.sh"
