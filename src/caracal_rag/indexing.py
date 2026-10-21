@@ -69,42 +69,94 @@ class Indexer:
         # embedding model. Mixing embedding spaces produces meaningless search
         # results, so refuse to index rather than silently mixing them.
         assert_embedding_model_consistent(self.collection, self.embedding_model)
-        # The dimension is validated the same way: a collection holding vectors
-        # from a differently dimensional model must never be mixed with query
-        # vectors from the configured model, even when the family happens to
-        # agree.
         if self.embedding_dim is not None:
             assert_embedding_dim_consistent(self.collection, self.embedding_dim)
+
+        configured_sources = list(self.config.sources or [])
+        if self.source_filter and not any(
+            source.name == self.source_filter for source in configured_sources
+        ):
+            raise ValueError(
+                f"Source {self.source_filter!r} is not configured. "
+                "Check the source name before indexing."
+            )
+        relevant_sources = [
+            source
+            for source in configured_sources
+            if self.source_filter is None or source.name == self.source_filter
+        ]
+
+        partial_load = False
         try:
             documents = list(self._load_documents())
         except SourceLoadError as exc:
-            # Source loading partially failed: some documents were fetched but
-            # one failed transiently. Index what we have and skip destructive
-            # reconciliation entirely, so a transient fetch failure is never
-            # mistaken for document deletion.
+            # A partial or failed inventory is never authoritative enough to
+            # delete anything. Index successfully fetched documents, but defer
+            # all reconciliation until a later run obtains a complete inventory.
             documents = exc.documents
             if self.source_filter:
                 documents = [
                     doc for doc in documents if doc.source == self.source_filter
                 ]
+            partial_load = True
             print(
                 "Source loading partially failed; skipping deletion reconciliation "
                 f"({len(documents)} document(s) loaded): {exc}"
             )
-        else:
-            current_urls = {doc.url for doc in documents}
 
-            # Remove chunks for documents that no longer exist in the source.
-            # Reconciliation is scoped to the source being indexed so that running
-            # `index --source fiteo-docs` never deletes vectors from other sources.
-            stale = delete_missing_documents(
-                self.collection, current_urls, source=self.source_filter
-            )
-            if stale:
-                print(f"Removed stale chunks for {len(stale)} deleted document(s)")
+        if not partial_load:
+            loaded_sources = {document.source for document in documents}
+            existing_sources = {
+                (metadata or {}).get("source")
+                for metadata in self._existing_chunks.values()
+                if not (metadata or {}).get("caracal_staging", False)
+            }
+            unexpectedly_empty = [
+                source.name
+                for source in relevant_sources
+                if source.name in existing_sources
+                and source.name not in loaded_sources
+                and not source.allow_empty
+            ]
+            if unexpectedly_empty:
+                names = ", ".join(sorted(unexpectedly_empty))
+                raise RuntimeError(
+                    "Indexing aborted because configured source(s) resolved to zero "
+                    f"documents while committed chunks still exist: {names}. No "
+                    "documents were indexed or deleted. Check the source path, URL, "
+                    "repository and branch. If an empty inventory is intentional and "
+                    "should clear that source, set allow_empty: true for that source "
+                    "in sources.yaml and rerun indexing."
+                )
 
+        # Index/refresh every discovered document before deleting stale rows.
+        # If any embedding or Chroma write fails, reconciliation is skipped, so
+        # the failure cannot additionally remove still-valid documents that were
+        # absent from the current inventory. Per-document replacement uses staged
+        # rows and rollback; the run as a whole is intentionally not transactional.
         for document in documents:
             self._index_document(document)
+
+        if not partial_load:
+            current_urls = {doc.url for doc in documents}
+            try:
+                # This is safe only after a complete inventory AND successful
+                # indexing of every discovered document. A partial Chroma delete
+                # can leave stale rows behind; that is non-destructive and the
+                # next successful run retries reconciliation.
+                stale = delete_missing_documents(
+                    self.collection, current_urls, source=self.source_filter
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Indexing updated discovered documents but failed while deleting "
+                    "stale Chroma rows. The deletion may have been partially applied; "
+                    "valid current rows are retained, and rerunning indexing after the "
+                    "Chroma failure is resolved will reconcile remaining stale rows. "
+                    "The manifest was not updated."
+                ) from exc
+            if stale:
+                print(f"Removed stale chunks for {len(stale)} deleted document(s)")
 
     def _index_document(self, document: Document) -> None:
         # Skip unchanged documents: if every chunk already exists with the same
@@ -172,15 +224,26 @@ class Indexer:
                 embedding_dim=self.embedding_dim,
             )
         except Exception as exc:
-            # Roll back the staged ids a partial failure may have written: they
-            # do not belong to any document and would otherwise linger in the
-            # collection. The old working vectors were never touched, so after
-            # the rollback the collection is exactly as it was before the run.
+            # A failed staging upsert may have written only part of the batch.
+            # Remove those temporary ids without hiding a failed cleanup: search
+            # excludes rows marked caracal_staging, but an operator needs to know
+            # when an orphaned stage row may remain for later reconciliation.
             try:
                 self.collection.delete(ids=staging_ids)
-            except Exception:
-                pass  # best effort: a lingering staged id is detected as drift
-            raise exc
+            except Exception as cleanup_exc:
+                try:
+                    self._existing_chunks = get_existing_chunks(self.collection)
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    "Chroma staging upsert failed and cleanup of temporary rows also "
+                    "failed. Any remaining rows are marked caracal_staging and excluded "
+                    "from search. Investigate Chroma, then rerun indexing to reconcile."
+                ) from cleanup_exc
+            raise RuntimeError(
+                "Chroma staging upsert failed; partial temporary rows were removed and "
+                "the previous committed document remains intact."
+            ) from exc
 
         # Snapshot the previous committed version before replacing deterministic ids.
         # Chroma upsert may partially mutate a batch and then fail, so a metadata-only
