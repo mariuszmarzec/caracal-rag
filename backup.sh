@@ -47,6 +47,13 @@ SOURCES_FILE="$STATE_HOME/config/sources.yaml"
 SECRETS_FILE="$STATE_HOME/config/secrets.yaml"
 MANIFEST_FILE="$STATE_HOME/index/manifest.json"
 
+for directory in "$STATE_HOME/config" "$STATE_HOME/index"; do
+    if [[ -L "$directory" ]]; then
+        echo "ERROR: refusing a symlink local-state directory: $directory" >&2
+        exit 1
+    fi
+done
+
 for required_file in "$SOURCES_FILE" "$SECRETS_FILE"; do
     if [[ ! -f "$required_file" || -L "$required_file" ]]; then
         echo "ERROR: expected a regular local state file at $required_file." >&2
