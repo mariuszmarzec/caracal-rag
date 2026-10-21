@@ -42,6 +42,7 @@ while (($# > 0)); do
 done
 
 [[ -d "$STATE_HOME" ]] || { echo "ERROR: Caracal state directory not found: $STATE_HOME" >&2; exit 1; }
+[[ ! -L "$STATE_HOME" ]] || { echo "ERROR: refusing a symlink Caracal state directory: $STATE_HOME" >&2; exit 1; }
 STATE_HOME="$(cd "$STATE_HOME" && pwd -P)"
 SOURCES_FILE="$STATE_HOME/config/sources.yaml"
 SECRETS_FILE="$STATE_HOME/config/secrets.yaml"
