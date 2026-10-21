@@ -164,7 +164,10 @@ def _fake_install_sh() -> str:
     # generation behind, which update.sh must remove without touching the active venv.
     prefix = """#!/usr/bin/env bash
 set -Eeuo pipefail
-echo "install invoked; CARACAL_HOME=${CARACAL_HOME:-<unset>}; CARACAL_VENV=${CARACAL_VENV:-<unset>}; CARACAL_INSTALL_WRAPPER=${CARACAL_INSTALL_WRAPPER:-<unset>}" >> "$INSTALL_LOG"
+printf 'install invoked; CARACAL_HOME=%s; CARACAL_VENV=%s; CARACAL_INSTALL_WRAPPER=%s\\n' \\
+    "${CARACAL_HOME:-<unset>}" \\
+    "${CARACAL_VENV:-<unset>}" \\
+    "${CARACAL_INSTALL_WRAPPER:-<unset>}" >> "$INSTALL_LOG"
 VENV="${CARACAL_VENV:?CARACAL_VENV must name the candidate environment}"
 mkdir -p "$VENV/bin"
 cat >"$VENV/bin/python" <<'PYTHON'
