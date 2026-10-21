@@ -50,6 +50,17 @@ SOURCES_BACKUP="$BACKUP_DIR/config/sources.yaml"
 SECRETS_BACKUP="$BACKUP_DIR/config/secrets.yaml"
 MANIFEST_BACKUP="$BACKUP_DIR/index/manifest.json"
 
+for directory in "$BACKUP_DIR/config" "$BACKUP_DIR/index"; do
+    if [[ -L "$directory" ]]; then
+        echo "ERROR: refusing a symlink in the backup: $directory" >&2
+        exit 1
+    fi
+done
+[[ -d "$BACKUP_DIR/config" && -d "$BACKUP_DIR/index" ]] || {
+    echo "ERROR: backup config/index directories are missing." >&2
+    exit 1
+}
+
 [[ -f "$BACKUP_INFO" && ! -L "$BACKUP_INFO" ]] || { echo "ERROR: BACKUP-INFO.txt is missing; this is not a recognized Caracal backup." >&2; exit 1; }
 grep -qx "format=caracal-local-state-v1" "$BACKUP_INFO" || { echo "ERROR: unsupported backup format." >&2; exit 1; }
 for required_file in "$SOURCES_BACKUP" "$SECRETS_BACKUP"; do
