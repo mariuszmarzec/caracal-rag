@@ -10,7 +10,6 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKUP_SCRIPT = REPO_ROOT / "backup.sh"
@@ -72,7 +71,9 @@ def _make_state(root: Path, *, manifest: bool = True) -> Path:
     return state
 
 
-def _backup(source_home: Path, backup_path: Path, *, home: Path) -> subprocess.CompletedProcess[str]:
+def _backup(
+    source_home: Path, backup_path: Path, *, home: Path
+) -> subprocess.CompletedProcess[str]:
     return _run(
         BACKUP_SCRIPT,
         "--home",
