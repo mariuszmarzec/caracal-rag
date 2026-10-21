@@ -239,7 +239,10 @@ def test_deleted_doc_removes_stale_chunks(monkeypatch: pytest.MonkeyPatch) -> No
     collection = FakeCollection()
     _patch_client(monkeypatch, collection)
 
-    indexer = Indexer(config=_make_config())
+    config = _make_config()
+    # This test intentionally simulates a complete, legitimate empty inventory.
+    config.sources[0].allow_empty = True
+    indexer = Indexer(config=config)
     indexer.run()
     assert len(collection._store) > 0
 
