@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,42 @@ from caracal_rag.vectorstore import (
 #: authenticated transport, so it never reaches a model-visible tool schema,
 #: tool argument, tool result, or LLM-facing transcript.
 PROTECTED_INTERFACE_NAME = "caracal-rag"
+DEFAULT_TOP_K = 5
+MAX_TOP_K = 20
+
+
+class SearchInputError(ValueError):
+    """Validation failure for untrusted MCP search arguments."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def validate_search_arguments(query: Any, top_k: Any) -> tuple[str, int]:
+    """Validate search arguments strictly without coercion."""
+    if not isinstance(query, str):
+        raise SearchInputError("invalid_query", "query must be a string.")
+    query = query.strip()
+    if not query:
+        raise SearchInputError(
+            "invalid_query", "query must contain at least one non-whitespace character."
+        )
+    # bool is an int subclass, so require the exact int type.
+    if type(top_k) is not int:
+        raise SearchInputError(
+            "invalid_top_k", f"top_k must be an integer between 1 and {MAX_TOP_K}."
+        )
+    if not 1 <= top_k <= MAX_TOP_K:
+        raise SearchInputError(
+            "invalid_top_k", f"top_k must be between 1 and {MAX_TOP_K} inclusive."
+        )
+    return query, top_k
+
+
+def _tool_error_text(code: str, message: str) -> str:
+    """Serialize a stable structured error for MCP clients."""
+    return json.dumps({"error": {"code": code, "message": message}}, ensure_ascii=False)
 
 
 @dataclass
