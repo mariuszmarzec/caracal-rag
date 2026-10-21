@@ -13,12 +13,31 @@ CARACAL_HOME="$(cd "$CARACAL_HOME" && pwd -P)"
 CONFIG_DIR="$CARACAL_HOME/config"
 INDEX_DIR="$CARACAL_HOME/index"
 BIN_DIR="$CARACAL_HOME/bin"
-VENV="$CARACAL_HOME/venv"
+VENV="${CARACAL_VENV:-$CARACAL_HOME/venv}"
+INSTALL_WRAPPER="${CARACAL_INSTALL_WRAPPER:-true}"
 CONFIG_PATH="$CONFIG_DIR/sources.yaml"
 SECRETS_PATH="$CONFIG_DIR/secrets.yaml"
 MANIFEST_PATH="$INDEX_DIR/manifest.json"
 
 echo "Installing Caracal RAG into $CARACAL_HOME"
+case "$INSTALL_WRAPPER" in
+    true|false) ;;
+    *)
+        echo "ERROR: CARACAL_INSTALL_WRAPPER must be 'true' or 'false'." >&2
+        exit 2
+        ;;
+esac
+# Updates install into a unique generation so the active venv stays untouched
+# until the candidate is installed and validated. Preserve the final component
+# so the default active venv may remain a symlink to a versioned generation.
+case "$VENV" in
+    /*) ;;
+    *) VENV="$PWD/$VENV" ;;
+esac
+VENV_PARENT="$(dirname "$VENV")"
+mkdir -p "$VENV_PARENT"
+VENV_PARENT="$(cd "$VENV_PARENT" && pwd -P)"
+VENV="$VENV_PARENT/$(basename "$VENV")"
 mkdir -p "$CONFIG_DIR" "$INDEX_DIR" "$BIN_DIR"
 
 command -v "$CARACAL_PYTHON" >/dev/null 2>&1 || {
@@ -99,8 +118,12 @@ fi
     echo "ERROR: pip install completed without creating $VENV/bin/caracal-rag." >&2
     exit 1
 }
-printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$VENV/bin/caracal-rag" >"$BIN_DIR/caracal-rag"
-chmod 0755 "$BIN_DIR/caracal-rag"
+if [[ "$INSTALL_WRAPPER" == true ]]; then
+    printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$VENV/bin/caracal-rag" >"$BIN_DIR/caracal-rag"
+    chmod 0755 "$BIN_DIR/caracal-rag"
+else
+    echo "Leaving the active CLI wrapper unchanged (CARACAL_INSTALL_WRAPPER=false)."
+fi
 
 CARACAL_HOME="$CARACAL_HOME" "$VENV/bin/python" - <<'PY'
 from caracal_rag.config import load_active_config, resolve_home

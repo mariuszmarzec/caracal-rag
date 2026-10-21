@@ -131,3 +131,38 @@ def test_installer_refuses_python_without_a_lock_before_pip_install(tmp_path: Pa
     assert result.returncode != 0
     assert "no locked dependency set is available for Python 3.15" in result.stderr
     assert not (home / "venv-install.log").exists()
+
+
+
+def test_installer_can_build_candidate_venv_without_replacing_active_wrapper(
+    tmp_path: Path,
+) -> None:
+    """Transactional update installation uses a separate venv and leaves wrapper untouched."""
+    home = tmp_path / "caracal-home"
+    candidate = home / "venvs" / "candidate-one"
+    wrapper = home / "bin" / "caracal-rag"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text("#!/usr/bin/env bash\necho old-wrapper\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    fake_python = tmp_path / "fake-python"
+    fake_python.write_text(_fake_python_script(), encoding="utf-8")
+    fake_python.chmod(0o755)
+
+    env = os.environ.copy()
+    env["CARACAL_HOME"] = str(home)
+    env["CARACAL_PYTHON"] = str(fake_python)
+    env["CARACAL_VENV"] = str(candidate)
+    env["CARACAL_INSTALL_WRAPPER"] = "false"
+
+    result = _install(env)
+
+    assert result.returncode == 0, result.stderr
+    assert (candidate / "bin" / "python").is_file()
+    assert (candidate / "bin" / "caracal-rag").is_file()
+    assert not (home / "venv").exists()
+    assert wrapper.read_text(encoding="utf-8") == (
+        "#!/usr/bin/env bash\necho old-wrapper\n"
+    )
+    install_args = (home / "venv-install.log").read_text(encoding="utf-8")
+    assert f"--constraint {REPO_ROOT / 'constraints-py312.lock'}" in install_args
+    assert "Leaving the active CLI wrapper unchanged" in result.stdout

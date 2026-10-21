@@ -236,8 +236,9 @@ bash ./update.sh
 By default, the script:
 1. Requires a clean Git worktree and a current branch with an upstream configured.
 2. Runs `git pull --ff-only` so it will not create a merge commit or silently resolve divergent history.
-3. Runs `install.sh` to reinstall the package and its Python dependencies into `~/.caracal/venv`.
-4. Runs `caracal-rag check` using the installed CLI to validate configuration and connectivity.
+3. Creates a separate candidate venv under `~/.caracal/venvs/` and runs `install.sh` with the matching checked-in Python dependency constraints lock. The active `~/.caracal/venv` and its stable CLI wrapper are not changed while package installation is in progress.
+4. Verifies the candidate Python and `caracal-rag` entry point exist, then runs `caracal-rag check` directly from the candidate before activating it.
+5. Promotes the validated candidate by atomically switching `~/.caracal/venv` to a symlink to the new generation. The previous environment is retained for rollback; older generations are not automatically deleted.
 
 If you have local edits you intentionally want to install without pulling from Git, run:
 
@@ -251,11 +252,19 @@ To skip the connectivity check (for example, when FreeLLMAPI or Chroma is tempor
 bash ./update.sh --skip-check
 ```
 
-You can combine the options: `bash ./update.sh --no-pull --skip-check`. The default update refuses to pull if the checkout has modified, staged or untracked files. Commit/stash those files first, or use `--no-pull` to reinstall the current checkout as-is.
+You can combine the options: `bash ./update.sh --no-pull --skip-check`. The default update refuses to pull if the checkout has modified, staged or untracked files. Commit/stash those files first, or use `--no-pull` to install the current checkout as-is. Even with `--skip-check`, the updater requires a runnable candidate Python and `caracal-rag` entry point before promotion.
 
-The script and installer preserve `~/.caracal/config/sources.yaml`, `~/.caracal/config/secrets.yaml`, and the local index manifest; they do not rebuild the index or delete the remote Chroma collection. After a successful update, restart the process or host that launches the Caracal MCP server (such as OpenClaw/OpenCode) so it imports the new Python code. The script cannot safely restart an MCP host whose lifecycle is managed separately.
+#### Candidate validation and rollback
 
-The installed runtime uses the virtual environment and active configuration under `~/.caracal`; it does not import Python modules directly from the checkout. You can also run `bash ./install.sh` manually to reinstall the current checkout without pulling or running the post-install check.
+The candidate lives at a unique path under `~/.caracal/venvs/`, not at the active venv path. The installer applies the checked-in `constraints-py310.lock` through `constraints-py314.lock` file matching the candidate Python interpreter, while `CARACAL_HOME` still points at the existing local configuration. The update uses the candidate entry point to run the post-install check before switching the active environment.
+
+If dependency installation, package installation, entry-point validation, or `caracal-rag check` fails, the active venv is not promoted or overwritten and the failed candidate is removed. The update reports the original error and exits nonzero. If activation itself fails, the updater attempts to restore the previous active target; if that rollback also fails it reports both the failure and the paths that must be inspected, and it preserves any candidate that may still be active rather than deleting a possibly working environment.
+
+For a legacy installation where `~/.caracal/venv` is a real directory, the first successful transactional update retains that directory under `~/.caracal/venvs/caracal-venv-legacy-...` and turns `~/.caracal/venv` into a symlink. This keeps old console-script shebangs resolving correctly if rollback is needed. Each later successful update retains the previous generation too; the updater deliberately does not prune old generations automatically. After a new generation has been verified over time, inspect the active target with `readlink -f "$HOME/.caracal/venv"` before manually removing only obsolete generations. Never remove the active target or the fallback you still need.
+
+The script and installer preserve `~/.caracal/config/sources.yaml`, `~/.caracal/config/secrets.yaml`, and the local index manifest; they do not rebuild the index, delete remote Chroma data, or roll back user configuration. After a successful update, restart the process or host that launches the Caracal MCP server (such as OpenClaw/OpenCode) so it imports the new Python code. The script cannot safely restart an MCP host whose lifecycle is managed separately.
+
+The installed runtime uses the active venv and configuration under `~/.caracal`; it does not import Python modules directly from the checkout. You can also run `bash ./install.sh` manually to reinstall the current checkout without pulling or running the post-install connectivity check. A manual install targets the currently active venv; use `update.sh` when you need candidate validation and rollback protection.
 
 ### Rotate credentials
 
