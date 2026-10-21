@@ -7,7 +7,6 @@ tests never read or modify the real user's ~/.caracal and never contact Chroma.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
