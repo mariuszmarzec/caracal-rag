@@ -246,7 +246,7 @@ class Indexer:
                 except Exception:
                     pass
                 raise RuntimeError(
-                    "Chroma staging upsert failed and cleanup of temporary rows also "
+                    "Chroma upsert failed during staging and cleanup of temporary rows also "
                     "failed. Any remaining rows are marked caracal_staging and excluded "
                     "from search. Investigate Chroma, then rerun indexing to reconcile."
                 ) from cleanup_exc
