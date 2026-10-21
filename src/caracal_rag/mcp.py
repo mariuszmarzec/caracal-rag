@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,42 @@ from caracal_rag.vectorstore import (
 #: authenticated transport, so it never reaches a model-visible tool schema,
 #: tool argument, tool result, or LLM-facing transcript.
 PROTECTED_INTERFACE_NAME = "caracal-rag"
+DEFAULT_TOP_K = 5
+MAX_TOP_K = 20
+
+
+class SearchInputError(ValueError):
+    """Validation failure for untrusted MCP search arguments."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def validate_search_arguments(query: Any, top_k: Any) -> tuple[str, int]:
+    """Validate search arguments strictly without coercion."""
+    if not isinstance(query, str):
+        raise SearchInputError("invalid_query", "query must be a string.")
+    query = query.strip()
+    if not query:
+        raise SearchInputError(
+            "invalid_query", "query must contain at least one non-whitespace character."
+        )
+    # bool is an int subclass, so require the exact int type.
+    if type(top_k) is not int:
+        raise SearchInputError(
+            "invalid_top_k", f"top_k must be an integer between 1 and {MAX_TOP_K}."
+        )
+    if not 1 <= top_k <= MAX_TOP_K:
+        raise SearchInputError(
+            "invalid_top_k", f"top_k must be between 1 and {MAX_TOP_K} inclusive."
+        )
+    return query, top_k
+
+
+def _tool_error_text(code: str, message: str) -> str:
+    """Serialize a stable structured error for MCP clients."""
+    return json.dumps({"error": {"code": code, "message": message}}, ensure_ascii=False)
 
 
 @dataclass
@@ -64,11 +101,17 @@ class CaracalMcpServer:
                         inputSchema={
                             "type": "object",
                             "properties": {
-                                "query": {"type": "string", "description": "Search query."},
+                                "query": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Non-empty search query.",
+                                },
                                 "top_k": {
                                     "type": "integer",
-                                    "description": "Number of results.",
-                                    "default": 5,
+                                    "minimum": 1,
+                                    "maximum": MAX_TOP_K,
+                                    "description": f"Number of results (1-{MAX_TOP_K}).",
+                                    "default": DEFAULT_TOP_K,
                                 },
                             },
                             "required": ["query"],
@@ -79,10 +122,10 @@ class CaracalMcpServer:
             @call_tool_attr()
             async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 if name == "search_api":
-                    query = arguments.get("query")
-                    top_k = int(arguments.get("top_k", 5))
-                    results = self.search(query=query, top_k=top_k)
-                    return [TextContent(type="text", text=self._format(results))]
+                    text = self._execute_search_tool(arguments)[0]
+                    # SDK 1.x returns content blocks only; errors use a
+                    # structured JSON payload so clients can distinguish them.
+                    return [TextContent(type="text", text=text)]
                 raise ValueError(f"Unknown tool: {name}")
         else:
             # mcp 2.x: register request handlers via add_request_handler. The
@@ -109,11 +152,17 @@ class CaracalMcpServer:
                         inputSchema={
                             "type": "object",
                             "properties": {
-                                "query": {"type": "string", "description": "Search query."},
+                                "query": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Non-empty search query.",
+                                },
                                 "top_k": {
                                     "type": "integer",
-                                    "description": "Number of results.",
-                                    "default": 5,
+                                    "minimum": 1,
+                                    "maximum": MAX_TOP_K,
+                                    "description": f"Number of results (1-{MAX_TOP_K}).",
+                                    "default": DEFAULT_TOP_K,
                                 },
                             },
                             "required": ["query"],
@@ -127,19 +176,45 @@ class CaracalMcpServer:
                 name = params.name
                 arguments = params.arguments or {}
                 if name == "search_api":
-                    query = arguments.get("query")
-                    top_k = int(arguments.get("top_k", 5))
-                    results = self.search(query=query, top_k=top_k)
+                    text, is_error = self._execute_search_tool(arguments)
                     return CallToolResult(
-                        content=[TextContent(type="text", text=self._format(results))],
-                        is_error=False,
+                        content=[TextContent(type="text", text=text)],
+                        is_error=is_error,
                     )
                 raise ValueError(f"Unknown tool: {name}")
 
             server.add_request_handler("tools/list", PaginatedRequestParams, list_tools_handler)
             server.add_request_handler("tools/call", CallToolRequestParams, call_tool_handler)
 
-    def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
+    def _execute_search_tool(self, arguments: dict[str, Any]) -> tuple[str, bool]:
+        try:
+            query, top_k = validate_search_arguments(
+                arguments.get("query"),
+                arguments.get("top_k", DEFAULT_TOP_K),
+            )
+        except SearchInputError as exc:
+            return _tool_error_text(exc.code, str(exc)), True
+
+        try:
+            results = self.search(query=query, top_k=top_k)
+        except Exception:
+            # Do not return backend exception text: it may contain credentials,
+            # authorization headers, private URLs, or request details.
+            return (
+                _tool_error_text(
+                    "search_failed",
+                    "Search could not complete because the embedding or vector database "
+                    "backend failed. Run caracal-rag check to verify connectivity and "
+                    "configuration, then retry. Sensitive backend details are omitted.",
+                ),
+                True,
+            )
+        return self._format(results), False
+
+    def search(
+        self, query: str, top_k: int = DEFAULT_TOP_K
+    ) -> list[SearchResult]:
+        query, top_k = validate_search_arguments(query, top_k)
         assert_embedding_model_consistent(self.collection, self.embedding_model)
         embedding = embed_texts(
             [query],
