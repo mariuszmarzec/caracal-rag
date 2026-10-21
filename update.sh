@@ -117,11 +117,26 @@ elif [[ -e "$ACTIVE_VENV" ]]; then
 fi
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-CANDIDATE_VENV="$GENERATIONS_DIR/caracal-venv-$STAMP-$"
-TEMP_LINK="$CARACAL_HOME/.venv-candidate-link-$"
+CANDIDATE_VENV="$GENERATIONS_DIR/caracal-venv-$STAMP-$BASHPID"
+TEMP_LINK="$CARACAL_HOME/.venv-candidate-link-$BASHPID"
 LAUNCHER_TEMP=""
+CANDIDATE_OWNED=false
+TEMP_LINK_OWNED=false
+LAUNCHER_TEMP_OWNED=false
 PROMOTION_STARTED=false
 UPDATE_SUCCESS=false
+
+# Do not install into or remove a path that existed before this invocation.
+[[ ! -e "$CANDIDATE_VENV" && ! -L "$CANDIDATE_VENV" ]] || {
+    echo "ERROR: candidate venv path already exists: $CANDIDATE_VENV" >&2
+    exit 1
+}
+[[ ! -e "$TEMP_LINK" && ! -L "$TEMP_LINK" ]] || {
+    echo "ERROR: temporary symlink path already exists: $TEMP_LINK" >&2
+    exit 1
+}
+mkdir -m 0700 -- "$CANDIDATE_VENV"
+CANDIDATE_OWNED=true
 
 restore_previous_active() {
     case "$ORIGINAL_KIND" in
@@ -144,7 +159,7 @@ restore_previous_active() {
         symlink|directory)
             if [[ -n "$OLD_VENV_TARGET" && -d "$OLD_VENV_TARGET" ]]; then
                 local rollback_link
-                rollback_link="$CARACAL_HOME/.venv-rollback-$"
+                rollback_link="$CARACAL_HOME/.venv-rollback-$BASHPID"
                 if [[ -e "$rollback_link" || -L "$rollback_link" ]]; then
                     echo "ERROR: rollback link path already exists: $rollback_link" >&2
                     return 1
@@ -186,14 +201,14 @@ cleanup_update() {
         fi
     fi
 
-    if [[ -n "$TEMP_LINK" && -L "$TEMP_LINK" ]]; then
+    if [[ "$TEMP_LINK_OWNED" == true && -n "$TEMP_LINK" && -L "$TEMP_LINK" ]]; then
         rm -f -- "$TEMP_LINK" || echo "WARNING: could not remove temporary symlink $TEMP_LINK" >&2
     fi
-    if [[ -n "$LAUNCHER_TEMP" && -e "$LAUNCHER_TEMP" ]]; then
+    if [[ "$LAUNCHER_TEMP_OWNED" == true && -n "$LAUNCHER_TEMP" && -e "$LAUNCHER_TEMP" ]]; then
         rm -f -- "$LAUNCHER_TEMP" || echo "WARNING: could not remove temporary wrapper $LAUNCHER_TEMP" >&2
     fi
 
-    if [[ -n "$CANDIDATE_VENV" && -d "$CANDIDATE_VENV" && ! -L "$CANDIDATE_VENV" ]]; then
+    if [[ "$CANDIDATE_OWNED" == true && -n "$CANDIDATE_VENV" && -d "$CANDIDATE_VENV" && ! -L "$CANDIDATE_VENV" ]]; then
         local active_target candidate_target
         active_target=""
         if [[ -L "$ACTIVE_VENV" ]]; then
@@ -209,15 +224,6 @@ cleanup_update() {
     exit "$status"
 }
 trap cleanup_update EXIT
-
-[[ ! -e "$CANDIDATE_VENV" && ! -L "$CANDIDATE_VENV" ]] || {
-    echo "ERROR: candidate venv path already exists: $CANDIDATE_VENV" >&2
-    exit 1
-}
-[[ ! -e "$TEMP_LINK" && ! -L "$TEMP_LINK" ]] || {
-    echo "ERROR: temporary symlink path already exists: $TEMP_LINK" >&2
-    exit 1
-}
 
 echo "Installing candidate Caracal RAG environment into $CANDIDATE_VENV..."
 if CARACAL_VENV="$CANDIDATE_VENV" CARACAL_INSTALL_WRAPPER=false bash "$REPO_ROOT/install.sh"; then
@@ -253,9 +259,10 @@ fi
 
 # Prepare the candidate symlink before touching the active path.
 ln -s -- "$CANDIDATE_VENV" "$TEMP_LINK"
+TEMP_LINK_OWNED=true
 
 if [[ "$ORIGINAL_KIND" == "directory" ]]; then
-    OLD_VENV_TARGET="$GENERATIONS_DIR/caracal-venv-legacy-$STAMP-$"
+    OLD_VENV_TARGET="$GENERATIONS_DIR/caracal-venv-legacy-$STAMP-$BASHPID"
     [[ ! -e "$OLD_VENV_TARGET" && ! -L "$OLD_VENV_TARGET" ]] || {
         echo "ERROR: legacy venv preservation path already exists: $OLD_VENV_TARGET" >&2
         exit 1
@@ -287,11 +294,14 @@ if ! mv -Tf -- "$TEMP_LINK" "$ACTIVE_VENV"; then
     exit 1
 fi
 TEMP_LINK=""
+TEMP_LINK_OWNED=false
 
 # Older/manual installations may not have the stable wrapper. Create it only
 # after candidate validation and promotion. Existing wrappers are not mutated.
 if [[ ! -x "$CARACAL_HOME/bin/caracal-rag" ]]; then
-    LAUNCHER_TEMP="$CARACAL_HOME/bin/.caracal-rag-update-$"
+    LAUNCHER_TEMP="$CARACAL_HOME/bin/.caracal-rag-update-$BASHPID"
+    [[ ! -e "$LAUNCHER_TEMP" && ! -L "$LAUNCHER_TEMP" ]] || { echo "ERROR: temporary CLI wrapper path already exists: $LAUNCHER_TEMP" >&2; exit 1; }
+    LAUNCHER_TEMP_OWNED=true
     if ! printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$ACTIVE_VENV/bin/caracal-rag" >"$LAUNCHER_TEMP"; then
         echo "ERROR: could not prepare the stable CLI wrapper." >&2
         exit 1
@@ -302,6 +312,7 @@ if [[ ! -x "$CARACAL_HOME/bin/caracal-rag" ]]; then
         exit 1
     fi
     LAUNCHER_TEMP=""
+    LAUNCHER_TEMP_OWNED=false
 fi
 
 UPDATE_SUCCESS=true
