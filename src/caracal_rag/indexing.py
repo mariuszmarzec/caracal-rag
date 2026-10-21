@@ -75,13 +75,6 @@ class Indexer:
             assert_embedding_dim_consistent(self.collection, self.embedding_dim)
 
         configured_sources = list(self.config.sources or [])
-        if self.source_filter and not any(
-            source.name == self.source_filter for source in configured_sources
-        ):
-            raise ValueError(
-                f"Source {self.source_filter!r} is not configured. "
-                "Check the source name before indexing."
-            )
         relevant_sources = [
             source
             for source in configured_sources
