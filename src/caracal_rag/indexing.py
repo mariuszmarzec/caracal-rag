@@ -51,6 +51,7 @@ class Indexer:
         # collection_size); the cache is refreshed after every upsert/delete so
         # the next document still sees an up-to-date view.
         self._existing_chunks = get_existing_chunks(self.collection)
+        self._pending_empty_deletions: set[str] = set()
 
     def _load_documents(self) -> Iterable[Document]:
         if self.config.config_path is None:
@@ -65,6 +66,7 @@ class Indexer:
             yield doc
 
     def run(self) -> None:
+        self._pending_empty_deletions.clear()
         # Fail fast if the collection already holds vectors from a different
         # embedding model. Mixing embedding spaces produces meaningless search
         # results, so refuse to index rather than silently mixing them.
@@ -140,6 +142,12 @@ class Indexer:
         if not partial_load:
             current_urls = {doc.url for doc in documents}
             try:
+                # Empty-content documents are explicit inventory entries, so defer
+                # their deletion until every other document has indexed successfully.
+                for document_url in sorted(self._pending_empty_deletions):
+                    delete_document_chunks(self.collection, document_url)
+                    self._drop_cached_chunks(document_url)
+
                 # This is safe only after a complete inventory AND successful
                 # indexing of every discovered document. A partial Chroma delete
                 # can leave stale rows behind; that is non-destructive and the
@@ -171,8 +179,10 @@ class Indexer:
         # chunk via chunk_markdown; treat that as no content so stale chunks are
         # removed instead of an empty chunk being upserted.
         if not chunks or all(not chunk.text.strip() for chunk in chunks):
-            delete_document_chunks(self.collection, document.url)
-            self._drop_cached_chunks(document.url)
+            # This document is explicitly present but no longer has content.
+            # Defer deleting its old chunks until all other documents finish,
+            # otherwise a later embedding failure would leave a partial run.
+            self._pending_empty_deletions.add(document.url)
             return
 
         # Generate the replacement embeddings BEFORE touching the working vectors
@@ -241,7 +251,7 @@ class Indexer:
                     "from search. Investigate Chroma, then rerun indexing to reconcile."
                 ) from cleanup_exc
             raise RuntimeError(
-                "Chroma staging upsert failed; partial temporary rows were removed and "
+                "Chroma upsert failed during staging; partial temporary rows were removed and "
                 "the previous committed document remains intact."
             ) from exc
 
