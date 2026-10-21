@@ -202,6 +202,14 @@ caracal-rag mcp --transport http --host 127.0.0.1 --port 8000 --path /mcp
 
 The MCP server exposes the `search_api(query, top_k=5)` tool to connected agents (OpenCode, OpenClaw, etc.). The raw access token is never a tool argument: on the `http` transport every request must present a valid `Authorization: Bearer <token>` header, and missing or invalid tokens are rejected with `401`. On the `stdio` transport the interface is local and unauthenticated by design.
 
+### MCP lifecycle after updates
+
+`update.sh` validates and activates a new Python venv generation, but it does **not** restart an MCP process or its host. The actual owner of an MCP process depends on how it was launched; Caracal does not maintain a registry of process IDs or a dedicated service manager, so it cannot safely infer which process should be restarted.
+
+- **`stdio` transport:** the MCP server process is normally spawned by the MCP client/host. After updating, use that host's own UI/configuration to reload or restart the Caracal MCP connection or the relevant host session. Restart the process that owns the session; do not kill a process by fuzzy name.
+- **`http` transport (default):** Caracal's HTTP MCP server is a separate server process. Restart it using the process manager or terminal that started that specific Caracal server. If it is managed by a dedicated service in your deployment, use that service's documented restart command and verify its status before reconnecting. The update script does not assume that such a service exists.
+- If the service's launcher or ownership is unclear, identify it first instead of restarting OpenClaw, OpenCode, Manul, or other unrelated processes. The post-update message tells you which transport-specific action applies; no restart is claimed to have happened automatically.
+
 ## Indexing Consistency & Manifest Validation
 
 - **Manifest Pre-flight**: Before indexing or searching, Caracal checks `~/.caracal/index/manifest.json` against the active config. If the configured model differs from the model that built the index, the operation is refused with rebuild guidance to prevent mixing embedding spaces.
@@ -262,7 +270,7 @@ If dependency installation, package installation, entry-point validation, or `ca
 
 For a legacy installation where `~/.caracal/venv` is a real directory, the first successful transactional update retains that directory under `~/.caracal/venvs/caracal-venv-legacy-...` and turns `~/.caracal/venv` into a symlink. This keeps old console-script shebangs resolving correctly if rollback is needed. Each later successful update retains the previous generation too; the updater deliberately does not prune old generations automatically. After a new generation has been verified over time, inspect the active target with `readlink -f "$HOME/.caracal/venv"` before manually removing only obsolete generations. Never remove the active target or the fallback you still need.
 
-The script and installer preserve `~/.caracal/config/sources.yaml`, `~/.caracal/config/secrets.yaml`, and the local index manifest; they do not rebuild the index, delete remote Chroma data, or roll back user configuration. After a successful update, restart the process or host that launches the Caracal MCP server (such as OpenClaw/OpenCode) so it imports the new Python code. The script cannot safely restart an MCP host whose lifecycle is managed separately.
+The script and installer preserve `~/.caracal/config/sources.yaml`, `~/.caracal/config/secrets.yaml`, and the local index manifest; they do not rebuild the index, delete remote Chroma data, or roll back user configuration. No MCP process is restarted by the update. After a successful update, follow [MCP lifecycle after updates](#mcp-lifecycle-after-updates) for the appropriate manual action for the configured transport.
 
 The installed runtime uses the active venv and configuration under `~/.caracal`; it does not import Python modules directly from the checkout. You can also run `bash ./install.sh` manually to reinstall the current checkout without pulling or running the post-install connectivity check. A manual install targets the currently active venv; use `update.sh` when you need candidate validation and rollback protection.
 

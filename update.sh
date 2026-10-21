@@ -323,5 +323,7 @@ if [[ -n "$OLD_VENV_TARGET" && -d "$OLD_VENV_TARGET" ]]; then
     echo "Previous venv retained for rollback: $OLD_VENV_TARGET"
 fi
 echo "Configuration, secrets, index manifest and Chroma data were not rolled back or rebuilt."
-echo "The update does not restart an already-running MCP process."
-echo "Restart the process/host that launches Caracal RAG MCP to load the new code."
+echo "No MCP process was restarted automatically."
+echo "If mcp.transport=stdio (or CARACAL_MCP_TRANSPORT=stdio), reload/restart the client host/session that spawned Caracal MCP."
+echo "If mcp.transport=http (the default), restart only the separately managed Caracal HTTP MCP server/service."
+echo "Follow the launcher/service restart procedure; the updater never guesses process ownership or kills processes by name."
