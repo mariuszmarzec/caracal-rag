@@ -186,7 +186,35 @@ class CaracalMcpServer:
             server.add_request_handler("tools/list", PaginatedRequestParams, list_tools_handler)
             server.add_request_handler("tools/call", CallToolRequestParams, call_tool_handler)
 
-    def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
+    def _execute_search_tool(self, arguments: dict[str, Any]) -> tuple[str, bool]:
+        try:
+            query, top_k = validate_search_arguments(
+                arguments.get("query"),
+                arguments.get("top_k", DEFAULT_TOP_K),
+            )
+        except SearchInputError as exc:
+            return _tool_error_text(exc.code, str(exc)), True
+
+        try:
+            results = self.search(query=query, top_k=top_k)
+        except Exception:
+            # Do not return backend exception text: it may contain credentials,
+            # authorization headers, private URLs, or request details.
+            return (
+                _tool_error_text(
+                    "search_failed",
+                    "Search could not complete because the embedding or vector database "
+                    "backend failed. Run caracal-rag check to verify connectivity and "
+                    "configuration, then retry. Sensitive backend details are omitted.",
+                ),
+                True,
+            )
+        return self._format(results), False
+
+    def search(
+        self, query: str, top_k: int = DEFAULT_TOP_K
+    ) -> list[SearchResult]:
+        query, top_k = validate_search_arguments(query, top_k)
         assert_embedding_model_consistent(self.collection, self.embedding_model)
         embedding = embed_texts(
             [query],
