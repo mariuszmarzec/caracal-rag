@@ -277,11 +277,62 @@ Do not point a populated collection at a different embedding family. The manifes
 
 The embedding **dimension** is checked the same way: `caracal-rag check` probes the configured model and refuses a manifest or live collection whose stored vectors differ in dimensionality, even when the family name agrees. Two models that happen to agree on dimension are still different embedding spaces and must never be mixed.
 
-### Uninstall
+## Backup and restore
 
-Back up configuration, secrets and the local manifest before removing the installation. This removes the local package, configuration, credentials and local state; it does not delete the remote Chroma collection.
+Caracal state lives locally under `~/.caracal`, but the vectors are stored by the separate Chroma service configured in `sources.yaml` (`chroma.host`, `chroma.port`, `chroma.collection`). A local-state backup is **not** a complete RAG backup unless the matching Chroma data is backed up separately. `backup.sh` deliberately never connects to Chroma or copies/deletes vector data.
+
+### Back up local state
+
+Run from a Caracal checkout:
 
 ```bash
-cp -a "$HOME/.caracal" "$HOME/caracal-backup"
+bash ./backup.sh
+# or choose an explicit destination outside the checkout:
+bash ./backup.sh --output "$HOME/caracal-backups/pre-upgrade-2026-10-21"
+```
+
+The default is a new timestamped folder under `~/caracal-backups`; `CARACAL_BACKUP_ROOT` can select a different parent. The output directory and its subdirectories are mode `0700`; saved files are mode `0600`. The script fails instead of overwriting an existing destination, refuses symlinked state directories/files, and never prints secret values. The backup contains:
+
+- `config/sources.yaml` — source, embedding, Chroma collection and MCP configuration;
+- `config/secrets.yaml` — the FreeLLMAPI API key and MCP access token, if configured;
+- `index/manifest.json` — included only if it exists, identifying the collection and embedding space recorded by Caracal;
+- `BACKUP-INFO.txt` — format/time and an explicit `chroma_vectors=included:NO` marker.
+
+Do not commit or upload these files to a public repository; the backup includes credentials. Store an additional copy on encrypted storage with access controls appropriate for secrets.
+
+### Back up Chroma separately
+
+Caracal currently connects through Chroma's `HttpClient`; it does not know whether the server uses a local persistent path, a Docker bind mount/named volume, a remote VM, a distributed deployment, or a managed Chroma service. For that reason there is no safe universal Chroma-copy command in `backup.sh`.
+
+- **Self-hosted single-node / Docker:** determine the actual persistent data path from the Chroma launch command/configuration. The official Docker example mounts a host path to `/data`; deployments may instead use a named volume or another path. Schedule a maintenance window, stop the Chroma server cleanly, take a filesystem/volume snapshot or archive of the *actual persisted data*, then restart it. Do not copy a live SQLite/HNSW data directory and assume the result is consistent. Restore that snapshot to the expected storage path while Chroma is stopped, then start the same compatible deployment version and verify the collection before reconnecting Caracal. See [Chroma's Docker deployment guide](https://docs.trychroma.com/deployment/docker) and [client/server mode](https://docs.trychroma.com/production/chroma-server/client-server-mode).
+- **Managed/Cloud or distributed Chroma:** use the backup/export and recovery procedure provided for that specific service and plan, including all catalog, vector/index and object-storage components it requires. The Caracal scripts cannot make or verify a complete managed-service snapshot.
+- **No usable Chroma backup:** the index can be rebuilt from configured sources with `caracal-rag index` after connectivity and model configuration are verified. Re-indexing is not a restore of the old index: source revisions, embeddings, metadata or unavailable documents may differ. Do not run it as an initial troubleshooting step against a collection you are trying to preserve.
+
+Write down the Chroma deployment type, exact persisted path/volume or provider recovery identifier, version, `chroma.collection` name and restore owner alongside the backup. Test the provider/storage restore procedure separately; this repository's tests intentionally never touch a live Chroma database.
+
+### Restore local state
+
+First recover the **matching Chroma collection** using its deployment-specific procedure when you need the old vectors. Then restore the local files into the intended Caracal home:
+
+```bash
+bash ./restore.sh "$HOME/caracal-backups/caracal-YYYYMMDDTHHMMSSZ"
+```
+
+Restoring into an empty target does not require `--force`. If any target files already exist, the script refuses to change them. Use `--force` only after reviewing the backup: it first saves the existing local config/secrets/manifest to a separate private `pre-restore-*` folder under `~/caracal-backups`, then replaces the requested files. Secrets are restored with mode `0600`. `restore.sh` never starts/stops Chroma, never deletes a collection, and never re-indexes.
+
+Before serving traffic, compare the restored `chroma.collection`, `embedding.model` and `embedding.api_base` settings in `config/sources.yaml` with the `collection`, `embedding_model` and `embedding_api_base` fields in `index/manifest.json`. The collection must be the one recovered from the Chroma snapshot. Do not edit the manifest just to make a mismatch disappear; a mismatch means the local state and vectors may not describe the same embedding space. If the backup predates indexing and has no manifest, follow the first-index setup/rebuild procedure rather than pretending an old collection was restored.
+
+### Verify recovery
+
+1. Put the restored `~/.caracal/bin` on `PATH` and run `caracal-rag check`. Resolve any configuration, credential, embedding endpoint or Chroma connectivity failures before continuing.
+2. Start the normal MCP host/process for this installation (OpenCode/OpenClaw for stdio, or the separately managed Caracal HTTP MCP service for HTTP). Restart only the process that actually owns the Caracal MCP session; do not kill processes by name.
+3. From a connected MCP client, call `search_api` with a query known to match a document that should exist in the recovered collection. Confirm it returns the expected source/document and useful content. A successful `check` alone proves connectivity, not that the expected vectors were restored. If it returns no expected result, stop and investigate the Chroma snapshot/collection identity before running `caracal-rag index`.
+4. If the embedding key or access token changed, rotate it with `caracal-rag setup` (hidden prompts) or the documented environment variables, then repeat the check and authenticated MCP search.
+
+### Uninstall
+
+Back up local state before removing the installation. The commands below remove local package/configuration/credentials; they do not remove remote Chroma data. To create the local backup, use `bash ./backup.sh` above rather than copying secret files with the shell's default permissions.
+
+```bash
 rm -rf "$HOME/.caracal"
 ```
