@@ -38,7 +38,7 @@ jobs:
           PIP_CONSTRAINT: ${{ github.workspace }}/constraints-py${{ matrix.python-tag }}.lock
         run: python -m pip install --constraint "constraints-py${{ matrix.python-tag }}.lock" -e ".[dev]"
       - name: Validate shell scripts
-        run: bash -n install.sh update.sh tools/refresh-dependencies.sh
+        run: bash -n install.sh update.sh backup.sh restore.sh tools/refresh-dependencies.sh
       - name: Lint
         run: ruff check .
       - name: Test
