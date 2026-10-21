@@ -462,6 +462,10 @@ def test_default_ff_pull_pulls_and_reinstalls(tmp_path: Path) -> None:
     assert env.head() != before
     assert (env.repo / "marker.txt").exists()
     assert "Caracal RAG update/reinstall completed." in proc.stdout
+    assert "No MCP process was restarted automatically." in proc.stdout
+    assert "mcp.transport=stdio" in proc.stdout
+    assert "mcp.transport=http" in proc.stdout
+    assert "never guesses process ownership or kills processes by name" in proc.stdout
 
 
 def test_installer_failure_propagates_no_post_install_check(tmp_path: Path) -> None:
