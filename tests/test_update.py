@@ -160,39 +160,39 @@ class FakeEnv:
 
 
 def _fake_install_sh() -> str:
-    # A deterministic candidate installer. Failure modes are injected at
-    # dependency/package boundaries and may leave partial candidate files behind.
-    return (
-        "#!/usr/bin/env bash\n"
-        "set -Eeuo pipefail\n"
-        'echo "install invoked; CARACAL_HOME=${CARACAL_HOME:-<unset>}; CARACAL_VENV=${CARACAL_VENV:-<unset>}; CARACAL_INSTALL_WRAPPER=${CARACAL_INSTALL_WRAPPER:-<unset>}" >> "$INSTALL_LOG"\n'
-        'VENV="${CARACAL_VENV:?CARACAL_VENV must name the candidate environment}"\n'
-        'mkdir -p "$VENV/bin"\n'
-        "cat >\\"$VENV/bin/python\\" <<'PYTHON'\n"
-        "#!/usr/bin/env bash\n"
-        "exit 0\n"
-        "PYTHON\n"
-        'chmod 0755 "$VENV/bin/python"\n'
-        'if [[ "${INSTALL_FAIL_STAGE:-}" == "dependencies" ]]; then\n'
-        '    echo "FAKE dependency installation failure (exit 5)" >&2\n'
-        "    exit 5\n"
-        "fi\n"
-        'if [[ "${MISSING_ENTRYPOINT:-0}" != "1" ]]; then\n'
-        '    cat >"$VENV/bin/caracal-rag" <<\\'CLI\\'\n'
-        + _fake_cli_script()
-        + "CLI\n"
-        + '    chmod 0755 "$VENV/bin/caracal-rag"\n'
-        + "fi\n"
-        + 'if [[ "${INSTALL_FAIL_STAGE:-}" == "package" ]]; then\n'
-        + '    echo "FAKE package installation failure (exit 6)" >&2\n'
-        + "    exit 6\n"
-        + "fi\n"
-        + 'if [[ "${INSTALL_FAIL:-0}" == "1" ]]; then\n'
-        + '    echo "FAKE installer failure (exit 5)" >&2\n'
-        + "    exit 5\n"
-        + "fi\n"
-        + "exit 0\n"
-    )
+    # A deterministic candidate installer. Failure modes can leave a partial
+    # generation behind, which update.sh must remove without touching the active venv.
+    prefix = """#!/usr/bin/env bash
+set -Eeuo pipefail
+echo "install invoked; CARACAL_HOME=${CARACAL_HOME:-<unset>}; CARACAL_VENV=${CARACAL_VENV:-<unset>}; CARACAL_INSTALL_WRAPPER=${CARACAL_INSTALL_WRAPPER:-<unset>}" >> "$INSTALL_LOG"
+VENV="${CARACAL_VENV:?CARACAL_VENV must name the candidate environment}"
+mkdir -p "$VENV/bin"
+cat >"$VENV/bin/python" <<'PYTHON'
+#!/usr/bin/env bash
+exit 0
+PYTHON
+chmod 0755 "$VENV/bin/python"
+if [[ "${INSTALL_FAIL_STAGE:-}" == "dependencies" ]]; then
+    echo "FAKE dependency installation failure (exit 5)" >&2
+    exit 5
+fi
+if [[ "${MISSING_ENTRYPOINT:-0}" != "1" ]]; then
+    cat >"$VENV/bin/caracal-rag" <<'CLI'
+"""
+    suffix = """CLI
+    chmod 0755 "$VENV/bin/caracal-rag"
+fi
+if [[ "${INSTALL_FAIL_STAGE:-}" == "package" ]]; then
+    echo "FAKE package installation failure (exit 6)" >&2
+    exit 6
+fi
+if [[ "${INSTALL_FAIL:-0}" == "1" ]]; then
+    echo "FAKE installer failure (exit 5)" >&2
+    exit 5
+fi
+exit 0
+"""
+    return prefix + _fake_cli_script() + suffix
 
 
 def _fake_cli_script() -> str:
@@ -210,6 +210,14 @@ def _fake_cli_script() -> str:
         '    echo "check ok"\n'
         'fi\n'
         'exit 0\n'
+    )
+
+
+def _fake_launcher_script() -> str:
+    """Stable CLI shim that always dispatches through the active venv path."""
+    return (
+        "#!/usr/bin/env bash\\n"
+        'exec "$CARACAL_HOME/venv/bin/caracal-rag" "$@"\\n'
     )
 
 
@@ -251,13 +259,17 @@ def _prepare(tmp_path: Path) -> FakeEnv:
     caracal_home.mkdir()
     (caracal_home / "bin").mkdir()
     fake_cli = caracal_home / "bin" / "caracal-rag"
+    active_venv = caracal_home / "venv"
+    (active_venv / "bin").mkdir(parents=True)
+    _write_executable(active_venv / "bin" / "python", "#!/usr/bin/env bash\\nexit 0\\n")
+    _write_executable(active_venv / "bin" / "caracal-rag", _fake_cli_script())
 
     shutil.copy(UPDATE_SH, repo / "update.sh")
     _write_executable(repo / "update.sh", (repo / "update.sh").read_text(encoding="utf-8"))
-    (repo / "pyproject.toml").write_text('name = "caracal-rag"\n', encoding="utf-8")
-    (repo / "README.md").write_text("fake caracal-rag checkout\n", encoding="utf-8")
+    (repo / "pyproject.toml").write_text('name = "caracal-rag"\\n', encoding="utf-8")
+    (repo / "README.md").write_text("fake caracal-rag checkout\\n", encoding="utf-8")
     _write_executable(repo / "install.sh", _fake_install_sh())
-    _write_executable(fake_cli, _fake_cli_script())
+    _write_executable(fake_cli, _fake_launcher_script())
     # A `git` PATH shim (named `git`, in a directory outside the repo so it
     # does not pollute the working tree) that logs any `git pull` invocation
     # and delegates to the real Git binary. The real `update.sh` calls
