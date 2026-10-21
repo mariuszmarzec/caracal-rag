@@ -65,7 +65,7 @@ class Indexer:
                 continue
             yield doc
 
-    def run(self) -> None:
+    def run(self) -> bool:
         self._pending_empty_deletions.clear()
         # Fail fast if the collection already holds vectors from a different
         # embedding model. Mixing embedding spaces produces meaningless search
@@ -120,6 +120,12 @@ class Indexer:
                 and source.name not in loaded_sources
                 and not source.allow_empty
             ]
+            if not relevant_sources and existing_sources and self.source_filter is None:
+                raise RuntimeError(
+                    "Indexing aborted because no sources are configured while committed "
+                    "Chroma chunks still exist. No documents were indexed or deleted. "
+                    "Restore the intended sources.yaml before indexing."
+                )
             if unexpectedly_empty:
                 names = ", ".join(sorted(unexpectedly_empty))
                 raise RuntimeError(
@@ -165,6 +171,11 @@ class Indexer:
                 ) from exc
             if stale:
                 print(f"Removed stale chunks for {len(stale)} deleted document(s)")
+
+        # False means useful documents may have been indexed, but the inventory
+        # was incomplete and stale-row reconciliation was intentionally skipped.
+        # The CLI must not update the manifest or report a complete successful run.
+        return not partial_load
 
     def _index_document(self, document: Document) -> None:
         # Skip unchanged documents: if every chunk already exists with the same
