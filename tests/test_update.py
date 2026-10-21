@@ -502,6 +502,7 @@ def test_caracal_home_passed_through_consistently(tmp_path: Path) -> None:
     check_line = env.check_log.read_text(encoding="utf-8").strip()
     expected = f"CARACAL_HOME={env.caracal_home}"
     assert expected in install_line, f"installer saw {install_line!r}"
+    assert "CARACAL_INSTALL_WRAPPER=false" in install_line
     assert expected in check_line, f"check saw {check_line!r}"
     # The post-install check ran against the CLI installed under that home.
     assert env.fake_cli.is_file()
@@ -600,12 +601,24 @@ def test_successful_update_promotes_candidate_and_retains_previous_venv(
     assert (legacy[0] / "bin" / "caracal-rag").read_text(encoding="utf-8") == previous_cli
     assert "Previous venv retained for rollback" in proc.stdout
     assert env.check_log.exists()
+    first_candidate = candidate
     # Stable wrapper must dispatch through the newly active generation.
     active_check = _run(
         [str(env.fake_cli), "check"], cwd=env.repo, env=dict(env.base_env)
     )
     assert active_check.returncode == 0, active_check.stderr
     assert "check ok" in active_check.stdout
+
+    # A second update must work when venv is already a generation symlink,
+    # retaining the previous generation instead of attempting to move it.
+    second = env.run_update("--no-pull")
+    assert second.returncode == 0, second.stderr
+    second_candidate = active.resolve()
+    assert second_candidate != first_candidate
+    assert second_candidate.is_dir()
+    assert first_candidate.is_dir()
+    assert (first_candidate / "bin" / "caracal-rag").is_file()
+    assert "Previous venv retained for rollback" in second.stdout
 
 
 def test_skip_check_still_validates_entry_point_and_promotes_candidate(
