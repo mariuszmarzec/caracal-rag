@@ -1351,7 +1351,7 @@ def test_failed_staging_cleanup_is_reported_and_staging_is_hidden(
     )
     _patch_documents(monkeypatch, [changed])
     from caracal_rag.vectorstore import upsert_chunks as real_upsert_chunks
-    original_upsert_method = FakeCollection.upsert
+    original_delete_method = FakeCollection.delete
 
     def partial_stage_then_fail(collection_arg, chunks, embeddings, embedding_model,
                                 ids=None, staging=False, embedding_dim=None):
@@ -1378,7 +1378,7 @@ def test_failed_staging_cleanup_is_reported_and_staging_is_hidden(
             for cid in ids
         ):
             raise RuntimeError("injected cleanup failure")
-        return original_upsert_method(self, ids, [], [], [])  # not expected for this test
+        return original_delete_method(self, ids)
 
     monkeypatch.setattr("caracal_rag.indexing.upsert_chunks", partial_stage_then_fail)
     monkeypatch.setattr(FakeCollection, "delete", fail_stage_cleanup)
