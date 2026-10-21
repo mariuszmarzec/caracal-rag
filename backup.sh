@@ -96,6 +96,7 @@ cleanup() {
 trap cleanup EXIT
 chmod 0700 "$STAGING"
 mkdir -p "$STAGING/config" "$STAGING/index"
+chmod 0700 "$STAGING/config" "$STAGING/index"
 cp -- "$SOURCES_FILE" "$STAGING/config/sources.yaml"
 cp -- "$SECRETS_FILE" "$STAGING/config/secrets.yaml"
 chmod 0600 "$STAGING/config/sources.yaml" "$STAGING/config/secrets.yaml"
