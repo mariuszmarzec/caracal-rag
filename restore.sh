@@ -103,10 +103,14 @@ fi
 
 # Prepare every restored file before changing any active target.
 STAGING="$(mktemp -d "$STATE_HOME/.restore-stage.XXXXXX")"
-cleanup() { if [[ -n "${STAGING:-}" && -d "$STAGING" ]]; then rm -rf -- "$STAGING"; fi; }
+cleanup() {
+    if [[ -n "${STAGING:-}" && -d "$STAGING" ]]; then rm -rf -- "$STAGING"; fi
+    if [[ -n "${PRESERVE_STAGE:-}" && -d "$PRESERVE_STAGE" ]]; then rm -rf -- "$PRESERVE_STAGE"; fi
+}
 trap cleanup EXIT
 chmod 0700 "$STAGING"
 mkdir -p "$STAGING/config" "$STAGING/index"
+chmod 0700 "$STAGING/config" "$STAGING/index"
 cp -- "$SOURCES_BACKUP" "$STAGING/config/sources.yaml"
 cp -- "$SECRETS_BACKUP" "$STAGING/config/secrets.yaml"
 chmod 0600 "$STAGING/config/sources.yaml" "$STAGING/config/secrets.yaml"
@@ -130,6 +134,7 @@ if [[ "$FORCE" == true && "$NEEDS_REPLACEMENT" == true ]]; then
     PRESERVE_STAGE="$(mktemp -d "$PRESERVE_ROOT/.pre-restore.XXXXXX")"
     chmod 0700 "$PRESERVE_STAGE"
     mkdir -p "$PRESERVE_STAGE/config" "$PRESERVE_STAGE/index"
+    chmod 0700 "$PRESERVE_STAGE/config" "$PRESERVE_STAGE/index"
     for pair in "$TARGET_SOURCES:config/sources.yaml" "$TARGET_SECRETS:config/secrets.yaml" "$TARGET_MANIFEST:index/manifest.json"; do
         source_path="${pair%%:*}"
         relative_path="${pair#*:}"
@@ -146,6 +151,7 @@ chroma_vectors=included:NO
 EOF
     chmod 0600 "$PRESERVE_STAGE/BACKUP-INFO.txt"
     mv -- "$PRESERVE_STAGE" "$PRESERVE_DIR"
+    PRESERVE_STAGE=""
 fi
 
 mkdir -p "$STATE_HOME/config" "$STATE_HOME/index"
