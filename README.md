@@ -48,6 +48,52 @@ caracal-rag setup --model bge-m3
 unset CARACAL_EMBEDDING_API_KEY
 ```
 
+## Reproducible dependency installs
+
+The supported WSL/Linux interpreters are Python 3.10 through 3.14. The checked-in
+`constraints-py310.lock` through `constraints-py314.lock` files pin the complete
+resolved runtime, development/test, and build dependency graph for each Python
+minor version. The installer detects the Python version inside the actual
+`~/.caracal/venv` and applies its matching constraints file. Fresh installs and
+updates therefore use the same approved package versions for the same Python
+minor; the installer still installs into the isolated virtual environment and
+never installs project dependencies system-wide.
+
+CI runs lock verification and the test suite on all five supported Python
+versions. The lock files are generated from `pyproject.toml` using
+[pip-tools](https://pip-tools.pypa.io/), with the generator version pinned in
+`tools/refresh-dependencies.sh`. To refresh every lock, install Python 3.10,
+3.11, 3.12, 3.13 and 3.14 (the corresponding `python3.x` commands must be on
+`PATH`) and run:
+
+```bash
+# Re-resolve changed/new requirements while retaining compatible existing pins.
+bash tools/refresh-dependencies.sh
+
+# Update one package and any pins needed to keep its graph compatible.
+bash tools/refresh-dependencies.sh --upgrade-package chromadb
+
+# Intentionally refresh all compatible pins; inspect the diff and run CI.
+bash tools/refresh-dependencies.sh --upgrade
+
+# Verify all checked-in locks match pyproject.toml without changing them.
+bash tools/refresh-dependencies.sh --check
+```
+
+The refresh/check script creates temporary virtual environments for the pinned
+lock-generation tool and removes them when it exits. `--check` uses each
+existing lock as a constraint and compares the resolved pin set, so adding,
+removing, or changing declared dependencies is detected by CI. A targeted run
+such as `bash tools/refresh-dependencies.sh --check --python 3.12` verifies
+just one interpreter's lock.
+
+For security fixes, prefer reviewing advisories and updating the affected
+package deliberately (for example with `--upgrade-package package-name`) rather
+than blindly downgrading a pin or refreshing the entire graph. Review the lock
+diff and run the full matrix before merging an intentional dependency update.
+Python versions outside the checked-in lock matrix are rejected by the
+installer until a matching lock is generated and verified.
+
 ## Commands
 
 - `caracal-rag setup [--model <family>] [--api-base <url>]`: configure the model, endpoint and secrets under `~/.caracal`; the API key and the access token are requested via hidden prompts if they are not already configured. Avoid passing keys or tokens as command-line arguments.
