@@ -122,7 +122,7 @@ class CaracalMcpServer:
             @call_tool_attr()
             async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 if name == "search_api":
-                    text, is_error = self._execute_search_tool(arguments)
+                    text = self._execute_search_tool(arguments)[0]
                     # SDK 1.x returns content blocks only; errors use a
                     # structured JSON payload so clients can distinguish them.
                     return [TextContent(type="text", text=text)]
