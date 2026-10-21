@@ -7,8 +7,8 @@ tests never read or modify the real user's ~/.caracal and never contact Chroma.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
