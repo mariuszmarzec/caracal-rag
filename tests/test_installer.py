@@ -10,6 +10,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def _fake_python_script() -> str:
     venv_python = r"""#!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == "-c" ]]; then
+    printf '%s\n' "${FAKE_PYTHON_VERSION:-3.12}"
+    exit 0
+fi
 printf '%s\n' "$*" >> "${CARACAL_HOME}/venv-install.log"
 if [[ "${1:-}" == "-m" && "${2:-}" == "pip" ]]; then
     if [[ " $* " == *" -e "* ]]; then
@@ -72,7 +76,9 @@ def test_installer_uses_private_venv_and_preserves_existing_state(tmp_path: Path
     assert secrets_path.stat().st_mode & 0o777 == 0o600
 
     install_args = (home / "venv-install.log").read_text(encoding="utf-8")
-    assert "pip install --upgrade --force-reinstall" in install_args
+    assert "pip install --constraint" in install_args
+    assert f"--constraint {REPO_ROOT / 'constraints-py312.lock'}" in install_args
+    assert "--upgrade --force-reinstall" in install_args
     assert " -e " not in f" {install_args} "
 
     cli = subprocess.run(
@@ -105,5 +111,23 @@ def test_installer_uses_private_venv_and_preserves_existing_state(tmp_path: Path
         '{"embedding_model":"bge-m3"}\n'
     )
     assert (home / "venv-install.log").read_text(encoding="utf-8").count(
-        "pip install --upgrade --force-reinstall"
+        "--force-reinstall"
     ) == 2
+
+
+
+def test_installer_refuses_python_without_a_lock_before_pip_install(tmp_path: Path) -> None:
+    home = tmp_path / "caracal-home"
+    fake_python = tmp_path / "fake-python"
+    fake_python.write_text(_fake_python_script(), encoding="utf-8")
+    fake_python.chmod(0o755)
+    env = os.environ.copy()
+    env["CARACAL_HOME"] = str(home)
+    env["CARACAL_PYTHON"] = str(fake_python)
+    env["FAKE_PYTHON_VERSION"] = "3.15"
+
+    result = _install(env)
+
+    assert result.returncode != 0
+    assert "no locked dependency set is available for Python 3.15" in result.stderr
+    assert not (home / "venv-install.log").exists()

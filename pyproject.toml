@@ -7,7 +7,7 @@ name = "caracal-rag"
 version = "0.1.0"
 description = "Caracal RAG - retrieval-augmented generation toolkit"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.15"
 authors = [{ name = "Mariusz Marzec" }]
 license = { text = "MIT" }
 dependencies = [
