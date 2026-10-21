@@ -76,6 +76,12 @@ fi
 if [[ -L "$STATE_HOME" ]]; then echo "ERROR: refusing a symlink Caracal state directory." >&2; exit 1; fi
 mkdir -p "$STATE_HOME"
 STATE_HOME="$(cd "$STATE_HOME" && pwd -P)"
+for directory in "$STATE_HOME/config" "$STATE_HOME/index"; do
+    if [[ -L "$directory" ]]; then
+        echo "ERROR: refusing a symlink local-state directory: $directory" >&2
+        exit 1
+    fi
+done
 TARGET_SOURCES="$STATE_HOME/config/sources.yaml"
 TARGET_SECRETS="$STATE_HOME/config/secrets.yaml"
 TARGET_MANIFEST="$STATE_HOME/index/manifest.json"
@@ -84,10 +90,11 @@ for target in "$TARGET_SOURCES" "$TARGET_SECRETS" "$TARGET_MANIFEST"; do
     [[ ! -L "$target" ]] || { echo "ERROR: refusing to overwrite a symlink: $target" >&2; exit 1; }
 done
 NEEDS_REPLACEMENT=false
-for target in "$TARGET_SOURCES" "$TARGET_SECRETS"; do [[ ! -e "$target" ]] || NEEDS_REPLACEMENT=true; done
-if [[ -e "$TARGET_MANIFEST" || "$MANIFEST_STATUS" == "included" ]]; then
-    [[ ! -e "$TARGET_MANIFEST" && "$MANIFEST_STATUS" == "absent" ]] || NEEDS_REPLACEMENT=true
-fi
+# Refuse only actual target replacement. A manifest present in the backup does
+# not require --force when restoring into a fresh, empty state directory.
+for target in "$TARGET_SOURCES" "$TARGET_SECRETS" "$TARGET_MANIFEST"; do
+    [[ ! -e "$target" ]] || NEEDS_REPLACEMENT=true
+done
 if [[ "$NEEDS_REPLACEMENT" == true && "$FORCE" != true ]]; then
     echo "ERROR: target state already contains files that would change." >&2
     echo "No files were restored. Inspect the target or repeat with --force to preserve a safety snapshot first." >&2
@@ -113,10 +120,13 @@ if [[ "$FORCE" == true && "$NEEDS_REPLACEMENT" == true ]]; then
     PRESERVE_ROOT="${CARACAL_BACKUP_ROOT:-$HOME/caracal-backups}"
     mkdir -p "$PRESERVE_ROOT"
     PRESERVE_ROOT="$(cd "$PRESERVE_ROOT" && pwd -P)"
-    PRESERVE_DIR="$PRESERVE_ROOT/pre-restore-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-    case "$PRESERVE_DIR" in
-        "$REPO_ROOT"|"$REPO_ROOT"/*) echo "ERROR: pre-restore safety copy cannot be inside the source repository." >&2; exit 1 ;;
+    case "$PRESERVE_ROOT" in
+        "$REPO_ROOT"|"$REPO_ROOT"/*)
+            echo "ERROR: pre-restore safety copy cannot be inside the source repository." >&2
+            exit 1
+            ;;
     esac
+    PRESERVE_DIR="$PRESERVE_ROOT/pre-restore-$(date -u +%Y%m%dT%H%M%SZ)-$"
     PRESERVE_STAGE="$(mktemp -d "$PRESERVE_ROOT/.pre-restore.XXXXXX")"
     chmod 0700 "$PRESERVE_STAGE"
     mkdir -p "$PRESERVE_STAGE/config" "$PRESERVE_STAGE/index"
