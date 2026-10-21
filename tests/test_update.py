@@ -216,8 +216,8 @@ def _fake_cli_script() -> str:
 def _fake_launcher_script() -> str:
     """Stable CLI shim that always dispatches through the active venv path."""
     return (
-        "#!/usr/bin/env bash\\n"
-        'exec "$CARACAL_HOME/venv/bin/caracal-rag" "$@"\\n'
+        "#!/usr/bin/env bash\n"
+        'exec "$CARACAL_HOME/venv/bin/caracal-rag" "$@"\n'
     )
 
 
@@ -261,13 +261,13 @@ def _prepare(tmp_path: Path) -> FakeEnv:
     fake_cli = caracal_home / "bin" / "caracal-rag"
     active_venv = caracal_home / "venv"
     (active_venv / "bin").mkdir(parents=True)
-    _write_executable(active_venv / "bin" / "python", "#!/usr/bin/env bash\\nexit 0\\n")
+    _write_executable(active_venv / "bin" / "python", "#!/usr/bin/env bash\nexit 0\n")
     _write_executable(active_venv / "bin" / "caracal-rag", _fake_cli_script())
 
     shutil.copy(UPDATE_SH, repo / "update.sh")
     _write_executable(repo / "update.sh", (repo / "update.sh").read_text(encoding="utf-8"))
-    (repo / "pyproject.toml").write_text('name = "caracal-rag"\\n', encoding="utf-8")
-    (repo / "README.md").write_text("fake caracal-rag checkout\\n", encoding="utf-8")
+    (repo / "pyproject.toml").write_text('name = "caracal-rag"\n', encoding="utf-8")
+    (repo / "README.md").write_text("fake caracal-rag checkout\n", encoding="utf-8")
     _write_executable(repo / "install.sh", _fake_install_sh())
     _write_executable(fake_cli, _fake_launcher_script())
     # A `git` PATH shim (named `git`, in a directory outside the repo so it
