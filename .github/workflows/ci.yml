@@ -9,16 +9,36 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python-version: "3.10"
+            python-tag: "310"
+          - python-version: "3.11"
+            python-tag: "311"
+          - python-version: "3.12"
+            python-tag: "312"
+          - python-version: "3.13"
+            python-tag: "313"
+          - python-version: "3.14"
+            python-tag: "314"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "${{ matrix.python-version }}"
           cache: pip
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+          cache-dependency-path: constraints-py${{ matrix.python-tag }}.lock
+      - name: Verify dependency lock is in sync with pyproject
+        run: bash tools/refresh-dependencies.sh --check --python "${{ matrix.python-version }}"
+      - name: Install locked dependencies
+        env:
+          # Pip propagates this to isolated build environments too.
+          PIP_CONSTRAINT: ${{ github.workspace }}/constraints-py${{ matrix.python-tag }}.lock
+        run: python -m pip install --constraint "constraints-py${{ matrix.python-tag }}.lock" -e ".[dev]"
       - name: Validate shell scripts
-        run: bash -n install.sh update.sh
+        run: bash -n install.sh update.sh tools/refresh-dependencies.sh
       - name: Lint
         run: ruff check .
       - name: Test
