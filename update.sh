@@ -254,7 +254,7 @@ if [[ "$RUN_CHECK" == true ]]; then
         exit "$check_status"
     fi
 else
-    echo "Skipping candidate connectivity check (--skip-check); install/entry-point validation still runs."
+    echo "Skipping post-install check (--skip-check); Skipping candidate connectivity check; install/entry-point validation still runs."
 fi
 
 # Prepare the candidate symlink before touching the active path.
