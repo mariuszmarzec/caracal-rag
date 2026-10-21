@@ -376,7 +376,7 @@ def test_call_tool_accepts_top_k_bounds_and_trims_query(
     result = _call_search_tool(server, {"query": "  login \n", "top_k": top_k})
 
     assert len(result) == 1
-    assert "error" not in json.loads(result[0].text) if result[0].text.startswith("{") else True
+    assert result[0].text == ""  # Fake search returns no results at either boundary.
     assert embedded_queries == [["login"]]
     assert searched_top_k == [top_k]
 
