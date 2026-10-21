@@ -134,7 +134,13 @@ def run_index(source: str | None, config_path: str | None = None) -> None:
     observed_dim = _probe_dim(config)
     _assert_index_safe(config, observed_dim=observed_dim)
     indexer = Indexer(config=config, source_filter=source, embedding_dim=observed_dim)
-    indexer.run()
+    indexing_complete = indexer.run()
+    if indexing_complete is False:
+        raise RuntimeError(
+            "Indexing loaded the available documents but source inventory was incomplete; "
+            "stale-row reconciliation was skipped and the manifest was not updated. "
+            "Resolve the source loading failure and rerun indexing."
+        )
     _write_manifest(config, indexer=indexer, embedding_dim=observed_dim)
 
 

@@ -100,8 +100,13 @@ class SourceConfig:
     repo: str | None = None
     path: str | None = None
     branch: str | None = None
+    # Empty source inventories preserve previously indexed rows by default.
+    # Set allow_empty=true only when an intentional empty inventory should clear them.
+    allow_empty: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.allow_empty, bool):
+            raise ValueError(f"Source {self.name!r} allow_empty must be a boolean")
         has_urls = self.urls or self.url
         if self.type == "github_md_doc_dir":
             if not self.repo or not self.path:
@@ -180,7 +185,7 @@ def _coerce_source(item: dict[str, Any]) -> SourceConfig:
     when setup updates the active YAML file. This allows forward-compatible
     extensions without making a routine credential rotation erase user data.
     """
-    allowed = {"name", "type", "urls", "url", "repo", "path", "branch"}
+    allowed = {"name", "type", "urls", "url", "repo", "path", "branch", "allow_empty"}
     return SourceConfig(**{key: value for key, value in item.items() if key in allowed})
 
 

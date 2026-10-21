@@ -239,7 +239,10 @@ def test_deleted_doc_removes_stale_chunks(monkeypatch: pytest.MonkeyPatch) -> No
     collection = FakeCollection()
     _patch_client(monkeypatch, collection)
 
-    indexer = Indexer(config=_make_config())
+    config = _make_config()
+    # This test intentionally simulates a complete, legitimate empty inventory.
+    config.sources[0].allow_empty = True
+    indexer = Indexer(config=config)
     indexer.run()
     assert len(collection._store) > 0
 
@@ -1147,3 +1150,253 @@ def test_failed_promotion_hides_staging_and_retry_reconciles(
         record.get("metadata", {}).get("caracal_staging", False) is False
         for record in collection._store.values()
     )
+
+
+
+def test_listing_failure_never_reconciles_or_reports_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed inventory keeps all old rows and marks the run incomplete."""
+    from caracal_rag.indexing import Indexer
+
+    existing = _make_markdown_doc(
+        "api", "old.md", "https://example.com/old.md", "# Old content"
+    )
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+    _patch_embed(monkeypatch, {})
+    _patch_documents(monkeypatch, [existing])
+    Indexer(config=_make_config()).run()
+    before = {key: dict(value) for key, value in collection._store.items()}
+    assert before
+
+    def failed_inventory(_path):
+        raise SourceLoadError("GitHub inventory request failed", [])
+
+    monkeypatch.setattr("caracal_rag.indexing.load_documents_from_config", failed_inventory)
+    result = Indexer(config=_make_config()).run()
+
+    assert result is False
+    assert collection._store == before
+
+
+def test_changed_document_embedding_failure_does_not_delete_stale_documents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stale cleanup must happen after embeddings for all discovered docs succeed."""
+    from caracal_rag.indexing import Indexer
+
+    original = _make_markdown_doc(
+        "api", "current.md", "https://example.com/current.md", "# Current old version"
+    )
+    stale = _make_markdown_doc(
+        "api", "removed.md", "https://example.com/removed.md", "# Still valid until reconcile"
+    )
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+    _patch_embed(monkeypatch, {})
+    _patch_documents(monkeypatch, [original, stale])
+    Indexer(config=_make_config()).run()
+    before = {key: dict(value) for key, value in collection._store.items()}
+    assert _stored_urls(collection) == {original.url, stale.url}
+
+    changed = _make_markdown_doc(
+        "api", "current.md", original.url, "# Current changed version"
+    )
+    _patch_documents(monkeypatch, [changed])
+
+    def failing_embed(*args, **kwargs):
+        raise RuntimeError("embedding service unavailable")
+
+    monkeypatch.setattr("caracal_rag.indexing.embed_texts", failing_embed)
+    with pytest.raises(RuntimeError, match="embedding service unavailable"):
+        Indexer(config=_make_config()).run()
+
+    assert collection._store == before
+    assert _stored_urls(collection) == {original.url, stale.url}
+
+
+def test_unexpected_empty_source_refuses_destructive_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty inventory cannot wipe an existing source unless opted in."""
+    from caracal_rag.indexing import Indexer
+
+    existing = _make_markdown_doc(
+        "api", "login.md", "https://example.com/login.md", "# Login"
+    )
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+    _patch_embed(monkeypatch, {})
+    _patch_documents(monkeypatch, [existing])
+    Indexer(config=_make_config()).run()
+    before = {key: dict(value) for key, value in collection._store.items()}
+
+    _patch_documents(monkeypatch, [])
+    with pytest.raises(RuntimeError, match="resolved to zero documents"):
+        Indexer(config=_make_config()).run()
+
+    assert collection._store == before
+
+
+def test_allow_empty_source_is_an_explicit_delete_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """allow_empty=true intentionally permits a complete empty inventory to clear a source."""
+    from caracal_rag.indexing import Indexer
+
+    existing = _make_markdown_doc(
+        "api", "login.md", "https://example.com/login.md", "# Login"
+    )
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+    _patch_embed(monkeypatch, {})
+    _patch_documents(monkeypatch, [existing])
+    Indexer(config=_make_config()).run()
+    assert collection._store
+
+    config = _make_config()
+    config.sources[0].allow_empty = True
+    _patch_documents(monkeypatch, [])
+    assert Indexer(config=config).run() is True
+
+    assert collection._store == {}
+
+
+def test_empty_document_removal_is_deferred_until_all_embeddings_succeed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blank document is deleted only after other current documents index successfully."""
+    from caracal_rag.indexing import Indexer
+
+    original_blank = _make_markdown_doc(
+        "api", "blank.md", "https://example.com/blank.md", "# Previously valid"
+    )
+    original_other = _make_markdown_doc(
+        "api", "other.md", "https://example.com/other.md", "# Other previous version"
+    )
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+    _patch_embed(monkeypatch, {})
+    _patch_documents(monkeypatch, [original_blank, original_other])
+    Indexer(config=_make_config()).run()
+    before = {key: dict(value) for key, value in collection._store.items()}
+
+    blank_now = _make_markdown_doc(
+        "api", "blank.md", original_blank.url, "   \n\n  "
+    )
+    other_now = _make_markdown_doc(
+        "api", "other.md", original_other.url, "# Other changed version"
+    )
+    _patch_documents(monkeypatch, [blank_now, other_now])
+
+    def failing_embed(*args, **kwargs):
+        raise RuntimeError("embedding service unavailable")
+
+    monkeypatch.setattr("caracal_rag.indexing.embed_texts", failing_embed)
+    with pytest.raises(RuntimeError, match="embedding service unavailable"):
+        Indexer(config=_make_config()).run()
+
+    assert collection._store == before
+
+
+def test_partial_stale_delete_failure_is_reported_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partially applied stale delete is surfaced and leaves current rows intact."""
+    from caracal_rag.indexing import Indexer
+
+    current = _make_markdown_doc(
+        "api", "current.md", "https://example.com/current.md", "# Current"
+    )
+    stale = _make_markdown_doc(
+        "api", "stale.md", "https://example.com/stale.md", "# Stale"
+    )
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+    _patch_embed(monkeypatch, {})
+    _patch_documents(monkeypatch, [current, stale])
+    Indexer(config=_make_config()).run()
+    _patch_documents(monkeypatch, [current])
+
+    def partial_delete(collection_arg, current_urls, source=None):
+        stale_ids = [
+            cid for cid, record in collection_arg._store.items()
+            if record.get("url") == stale.url
+        ]
+        collection_arg.delete(ids=stale_ids[:1])
+        raise RuntimeError("connection reset after delete")
+
+    monkeypatch.setattr("caracal_rag.indexing.delete_missing_documents", partial_delete)
+    with pytest.raises(RuntimeError, match="manifest was not updated"):
+        Indexer(config=_make_config()).run()
+
+    assert current.url in _stored_urls(collection)
+
+
+def test_failed_staging_cleanup_is_reported_and_staging_is_hidden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed rollback is explicit, and any orphan staging rows remain unsearchable."""
+    from caracal_rag.indexing import Indexer
+    from caracal_rag.vectorstore import search_chunks
+
+    original_doc = _make_markdown_doc(
+        "api", "login.md", "https://example.com/login.md", "# Previous committed content"
+    )
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+    _patch_embed(monkeypatch, {})
+    _patch_documents(monkeypatch, [original_doc])
+    Indexer(config=_make_config()).run()
+    old_store = {key: dict(value) for key, value in collection._store.items()}
+
+    changed = _make_markdown_doc(
+        "api", "login.md", original_doc.url, "# Replacement content"
+    )
+    _patch_documents(monkeypatch, [changed])
+    from caracal_rag.vectorstore import upsert_chunks as real_upsert_chunks
+    original_delete_method = FakeCollection.delete
+
+    def partial_stage_then_fail(collection_arg, chunks, embeddings, embedding_model,
+                                ids=None, staging=False, embedding_dim=None):
+        chunk_list = list(chunks)
+        if staging:
+            real_upsert_chunks(
+                collection_arg,
+                chunk_list[:1],
+                embeddings[:1],
+                embedding_model=embedding_model,
+                ids=list(ids or [])[:1],
+                staging=True,
+                embedding_dim=embedding_dim,
+            )
+            raise RuntimeError("injected partial stage failure")
+        return real_upsert_chunks(
+            collection_arg, chunk_list, embeddings, embedding_model=embedding_model,
+            ids=ids, staging=staging, embedding_dim=embedding_dim
+        )
+
+    def fail_stage_cleanup(self, ids):
+        if any(
+            (self._store.get(cid, {}).get("metadata", {}).get("caracal_staging", False))
+            for cid in ids
+        ):
+            raise RuntimeError("injected cleanup failure")
+        return original_delete_method(self, ids)
+
+    monkeypatch.setattr("caracal_rag.indexing.upsert_chunks", partial_stage_then_fail)
+    monkeypatch.setattr(FakeCollection, "delete", fail_stage_cleanup)
+
+    with pytest.raises(RuntimeError, match="cleanup of temporary rows also failed"):
+        Indexer(config=_make_config()).run()
+
+    assert all(collection._store[cid] == record for cid, record in old_store.items())
+    staging_ids = [
+        cid for cid, record in collection._store.items()
+        if record.get("metadata", {}).get("caracal_staging", False)
+    ]
+    assert staging_ids
+    results = search_chunks(collection, [0.1, 0.2], top_k=5)
+    returned_metadata = results.get("metadatas", [[]])[0]
+    assert all(not (meta or {}).get("caracal_staging", False) for meta in returned_metadata)
