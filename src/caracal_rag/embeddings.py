@@ -64,7 +64,10 @@ def embed_texts(
     vectors: list[list[float]] = []
     for text in texts:
         try:
-            response = litellm.embedding(input=[text], model=model)
+            # FreeLLMAPI exposes an OpenAI-compatible /v1/embeddings endpoint. LiteLLM
+# requires the provider prefix to select its OpenAI adapter; the adapter
+# strips the prefix before sending the model id to the configured API base.
+response = litellm.embedding(input=[text], model=f"openai/{model}")
         except Exception as exc:  # noqa: BLE001 - sanitize service diagnostics
             # Provider clients sometimes include request details in exceptions.
             # Never allow a configured key to leak from index/check/MCP errors.
