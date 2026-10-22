@@ -1400,3 +1400,46 @@ def test_failed_staging_cleanup_is_reported_and_staging_is_hidden(
     results = search_chunks(collection, [0.1, 0.2], top_k=5)
     returned_metadata = results.get("metadatas", [[]])[0]
     assert all(not (meta or {}).get("caracal_staging", False) for meta in returned_metadata)
+
+
+def test_indexer_handles_numpy_embedding_arrays_from_chroma(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chroma returns embeddings as NumPy arrays; their truth value is undefined."""
+    import numpy as np
+
+    from caracal_rag.indexing import Indexer
+
+    class NumpyEmbeddingsCollection(FakeCollection):
+        def get(self, where=None, include=None):
+            result = super().get(where=where, include=include)
+            if include is not None and "embeddings" in include:
+                result["embeddings"] = np.asarray(
+                    result.get("embeddings", []), dtype=np.float32
+                )
+            return result
+
+    original = _make_markdown_doc(
+        "api", "login.md", "https://example.com/login.md", "# Login\n\nOld details."
+    )
+    updated = _make_markdown_doc(
+        "api", "login.md", original.url, "# Login\n\nUpdated details."
+    )
+    _patch_embed(monkeypatch, {})
+    collection = NumpyEmbeddingsCollection()
+    _patch_client(monkeypatch, collection)
+    _patch_documents(monkeypatch, [original])
+
+    Indexer(config=_make_config()).run()
+    assert _stored_urls(collection) == {original.url}
+
+    # Updating a previously indexed document snapshots existing vectors for
+    # rollback; this is the path where ndarray truthiness used to crash.
+    _patch_documents(monkeypatch, [updated])
+    Indexer(config=_make_config()).run()
+    assert _stored_urls(collection) == {updated.url}
+    assert all(
+        record.get("content_hash") == updated.content_hash
+        for record in collection._store.values()
+    )
+
