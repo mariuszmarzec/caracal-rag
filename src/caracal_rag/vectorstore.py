@@ -240,7 +240,9 @@ def collection_embedding_dim(collection) -> int | None:
     """
     existing = collection.get(include=["metadatas", "embeddings"])
     metadatas = existing.get("metadatas") or []
-    embeddings = existing.get("embeddings") or []
+    embeddings = existing.get("embeddings")
+    if embeddings is None:
+        embeddings = []
 
     committed: list[dict] = []
     for metadata, vector in zip(metadatas, embeddings):
