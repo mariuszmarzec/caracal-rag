@@ -135,7 +135,7 @@ The policy is configured in `sources.yaml`:
 mcp:
   transport: http        # default authenticated; 'stdio' is an explicit opt-in local/unauthenticated interface
   host: 127.0.0.1        # http bind host
-  port: 8000             # http bind port
+  port: 3500             # http bind port
   path: /mcp             # http mount path
 access_token:
   enabled: true   # set to false only to explicitly disable protection
@@ -196,7 +196,7 @@ caracal-rag mcp --transport stdio
 To change the bind address of the HTTP transport:
 
 ```bash
-caracal-rag mcp --transport http --host 127.0.0.1 --port 8000 --path /mcp
+caracal-rag mcp --transport http --host 127.0.0.1 --port 3500 --path /mcp
 # or set CARACAL_MCP_TRANSPORT=http and the bind env vars
 ```
 
