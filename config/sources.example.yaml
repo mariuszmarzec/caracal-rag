@@ -23,7 +23,7 @@ chroma:
 mcp:
   transport: http
   host: 127.0.0.1
-  port: 8000
+  port: 3500
   path: /mcp
 access_token:
   enabled: true

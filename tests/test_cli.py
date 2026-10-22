@@ -40,7 +40,7 @@ litellm_stub.api_key = None
 sys.modules["litellm"] = litellm_stub
 
 from caracal_rag.cli import build_parser, run_check, run_index, run_mcp, run_setup  # noqa: E402
-from caracal_rag.config import AppConfig, ConfigError  # noqa: E402
+from caracal_rag.config import AppConfig, ConfigError, McpTransportConfig  # noqa: E402
 
 #: Every protected interface path requires a valid token. These tests stub the
 #: embedding/Chroma services, so they supply a token through the environment
@@ -336,6 +336,11 @@ def test_check_missing_config_reports_actionable_error(
     err = capsys.readouterr().err
     assert "No active configuration found" in err
     assert "UnboundLocalError" not in err
+
+
+def test_default_mcp_port_is_3500(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CARACAL_MCP_PORT", raising=False)
+    assert McpTransportConfig().port == 3500
 
 
 def test_mcp_parser_defaults_and_overrides() -> None:
