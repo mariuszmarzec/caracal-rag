@@ -93,7 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         type=int,
         help="MCP server port for the http transport (default: $CARACAL_MCP_PORT, "
-        "then 8000).",
+        "then 3500).",
     )
     mcp_parser.add_argument(
         "--path",
