@@ -40,7 +40,7 @@ DEFAULT_MCP_TRANSPORT = "http"
 #: Default bind host for the HTTP MCP server.
 DEFAULT_MCP_HOST = "127.0.0.1"
 #: Default bind port for the HTTP MCP server.
-DEFAULT_MCP_PORT = 8000
+DEFAULT_MCP_PORT = 3500
 #: Default HTTP path for the MCP server.
 DEFAULT_MCP_PATH = "/mcp"
 
