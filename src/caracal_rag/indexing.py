@@ -268,7 +268,9 @@ class Indexer:
         )
         previous_ids = previous.get("ids") or []
         previous_documents = previous.get("documents") or []
-        previous_embeddings = previous.get("embeddings") or []
+        previous_embeddings = previous.get("embeddings")
+        if previous_embeddings is None:
+            previous_embeddings = []
         previous_metadatas = previous.get("metadatas") or []
         snapshot_ids: list[str] = []
         snapshot_documents: list[str] = []
