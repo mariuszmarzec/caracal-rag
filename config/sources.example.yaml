@@ -36,3 +36,6 @@ sources:
     repo: mariuszmarzec/fiteo
     path: docs/api
     branch: master
+  - name: quickmvi-readme
+    type: markdown
+    url: https://raw.githubusercontent.com/mariuszmarzec/QuickMVI/develop/README.md
