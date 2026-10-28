@@ -91,3 +91,19 @@ def test_search_formatting(monkeypatch) -> None:
     assert "Source: api" in text
     assert "Document: login.md" in text
     assert "Login details." in text
+
+
+def test_search_uses_query_embedding_mode(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_embed(texts, **kwargs):
+        captured.update(kwargs)
+        return [[0.1, 0.2]]
+
+    monkeypatch.setattr("caracal_rag.mcp._chroma_client", lambda *args, **kwargs: FakeChroma())
+    monkeypatch.setattr("caracal_rag.mcp.embed_texts", fake_embed)
+
+    server = CaracalMcpServer(AppConfig.from_yaml("config/sources.example.yaml"))
+    server.search("jak działa paginacja")
+
+    assert captured["input_type"] == "query"
