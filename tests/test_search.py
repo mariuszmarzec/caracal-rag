@@ -93,7 +93,6 @@ def test_search_formatting(monkeypatch) -> None:
     assert "Login details." in text
 
 
-
 def test_search_uses_query_embedding_type(monkeypatch) -> None:
     calls: list[dict] = []
 
