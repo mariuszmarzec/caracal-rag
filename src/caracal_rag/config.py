@@ -9,7 +9,7 @@ import yaml
 
 #: Environment variable that overrides the Caracal home directory.
 CARACAL_HOME_ENV = "CARACAL_HOME"
-#: Environment variable with a FreeLLMAPI key; takes precedence over secrets.yaml.
+#: Environment variable with a embedding endpoint API key; takes precedence over secrets.yaml.
 EMBEDDING_API_KEY_ENV = "CARACAL_EMBEDDING_API_KEY"
 #: Environment variable with the Caracal RAG access token; takes precedence over
 #: secrets.yaml. Used by every protected interface (the MCP server). It is read
@@ -29,7 +29,7 @@ MCP_PORT_ENV = "CARACAL_MCP_PORT"
 #: Environment variable for the HTTP MCP server path.
 MCP_PATH_ENV = "CARACAL_MCP_PATH"
 
-DEFAULT_EMBEDDING_API_BASE = "http://localhost:3001/v1"
+DEFAULT_EMBEDDING_API_BASE = "http://127.0.0.1:4000/v1"
 
 #: Default MCP transport: ``http`` is the authenticated interface. ``stdio`` is
 #: the zero-config local mode, but it has no out-of-band caller-authentication
@@ -126,7 +126,7 @@ class SourceConfig:
 
 @dataclass
 class EmbeddingConfig:
-    #: Explicit FreeLLMAPI embedding family/model. There is intentionally no
+    #: Explicit embedding model served by the configured OpenAI-compatible endpoint. There is intentionally no
     #: built-in default: silently choosing a model would let an index be built
     #: in an embedding space the user did not pick.
     model: str
@@ -260,9 +260,9 @@ class AppConfig:
         if not str(configured_model or "").strip():
             raise ConfigError(
                 f"embedding.model is missing in {path}. Set an explicit "
-                "FreeLLMAPI embedding family/model (for example "
-                "`embedding.model: bge-m3`) after checking what is enabled in "
-                "your deployment under FreeLLMAPI Models -> Embeddings, or "
+                "embedding model served by the configured OpenAI-compatible endpoint (for example "
+                "`embedding.model: multilingual-e5-base`) after checking what is enabled in "
+                "your deployment under configured embedding endpoint, or "
                 "export CARACAL_EMBEDDING_MODEL. There is no built-in default "
                 "model: a silently chosen family would make the index "
                 "incompatible with the vectors you expect."
@@ -270,8 +270,8 @@ class AppConfig:
         if str(configured_model).strip().lower() == "auto":
             raise ConfigError(
                 "embedding.model: auto is not safe for a persistent index because "
-                "FreeLLMAPI may change its default family. Select an explicit "
-                "family/model under FreeLLMAPI Models -> Embeddings and configure "
+                "the configured endpoint may change its default model. Select an explicit "
+                "family/model under configured embedding endpoint and configure "
                 "that value in embedding.model before indexing or serving MCP."
             )
         embedding_data["model"] = str(configured_model).strip()
@@ -308,7 +308,7 @@ class AppConfig:
 
 
 def load_secrets(path: Path) -> dict[str, str]:
-    """Load user secrets (the FreeLLMAPI key and the access token) from the secrets file.
+    """Load user secrets (the embedding endpoint API key and the access token) from the secrets file.
 
     The file must not be readable by group or other users; a loose mode is
     refused rather than silently read, because the key must never sit in a
@@ -347,7 +347,7 @@ def load_secrets(path: Path) -> dict[str, str]:
 
 
 def write_secret_api_key(path: Path, api_key: str) -> None:
-    """Persist the FreeLLMAPI key in a private secrets file.
+    """Persist the embedding endpoint API key in a private secrets file.
 
     Any other keys already present in the file are preserved. Existing files
     are made private before they are read or rewritten, and the open descriptor
