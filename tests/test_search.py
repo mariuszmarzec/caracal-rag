@@ -102,6 +102,7 @@ def test_search_uses_query_embedding_mode(monkeypatch) -> None:
 
     monkeypatch.setattr("caracal_rag.mcp._chroma_client", lambda *args, **kwargs: FakeChroma())
     monkeypatch.setattr("caracal_rag.mcp.embed_texts", fake_embed)
+    monkeypatch.setattr("caracal_rag.mcp.Server", FakeServer)
 
     server = CaracalMcpServer(AppConfig.from_yaml("config/sources.example.yaml"))
     server.search("jak działa paginacja")
