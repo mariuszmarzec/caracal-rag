@@ -276,7 +276,7 @@ def _ensure_api_key(config: AppConfig) -> None:
             "'caracal-rag setup', by exporting "
             f"{EMBEDDING_API_KEY_ENV}, or by setting `embedding.api_key` in the "
             "secrets file under your Caracal home (~/.caracal/config/secrets.yaml). "
-            "The key must be a valid key for the configured configured embedding service endpoint."
+            "The key must be valid for the configured embedding endpoint."
         )
 
 
@@ -329,7 +329,7 @@ def _probe_dim(config: AppConfig) -> int:
             f"{config.embedding.api_base!r} for model {config.embedding.model!r}: "
             f"{redact_secret(str(exc), config.embedding.api_key)}. Verify the "
             "configured embedding service is running, the base URL is correct, and that "
-            "model is enabled under configured embedding endpoint."
+            "the model is available at the configured embedding endpoint."
         ) from exc
 
 
@@ -388,7 +388,7 @@ def run_setup(
     resolved_model = model or (existing.embedding.model if existing else None)
     if not resolved_model:
         if interactive:
-            resolved_model = input("Embedding family/model (e.g. multilingual-e5-base): ").strip() or None
+            resolved_model = input("Embedding model (e.g. multilingual-e5-base): ").strip() or None
         if not resolved_model:
             raise ConfigError(
                 "No embedding model supplied. Re-run with --model <family> "
