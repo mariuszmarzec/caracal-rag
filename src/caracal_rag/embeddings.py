@@ -1,9 +1,9 @@
-"""Embedding generation through a LiteLLM-compatible (FreeLLMAPI) endpoint.
+"""Embedding generation through an OpenAI-compatible LiteLLM endpoint.
 
 The embedding model is *never* defaulted here: callers must pass an explicit
-model taken from the active configuration. Silently choosing a model would let
-an index be built in an embedding space the user did not pick, and would make
-stored vectors incompatible with later queries.
+model taken from the active configuration. E5 models use task-specific prefixes:
+indexed document chunks use ``passage:`` and search inputs use ``query:``.
+Other embedding models receive the original text unchanged.
 """
 
 from __future__ import annotations
@@ -39,11 +39,28 @@ def _get_embedding_client(api_base: str, api_key: str | None = None) -> None:
         litellm.api_key = os.getenv("LITELLM_API_KEY", None)
 
 
+def _prepare_embedding_text(text: str, model: str, input_type: str) -> str:
+    """Apply model-specific input conventions before sending text to LiteLLM.
+
+    The multilingual E5 family is trained to distinguish retrieval queries from
+    passages. Match the configured model alias as well as a provider-qualified
+    model id, since Caracal typically sees the LiteLLM proxy alias.
+    """
+    if input_type not in {"query", "passage"}:
+        raise ValueError("input_type must be either 'query' or 'passage'.")
+
+    model_id = model.strip().lower().rsplit("/", 1)[-1].split(":", 1)[0]
+    if model_id == "multilingual-e5-base":
+        return f"{input_type}: {text}"
+    return text
+
+
 def embed_texts(
     texts: list[str],
     api_base: str,
     model: str,
     api_key: str | None = None,
+    input_type: str = "query",
 ) -> list[list[float]]:
     """Embed ``texts`` with the explicitly configured ``model``.
 
@@ -64,10 +81,12 @@ def embed_texts(
     vectors: list[list[float]] = []
     for text in texts:
         try:
-            # FreeLLMAPI exposes an OpenAI-compatible /v1/embeddings endpoint. LiteLLM
-            # requires the provider prefix to select its OpenAI adapter; the adapter
-            # strips the prefix before sending the model id to the configured API base.
-            response = litellm.embedding(input=[text], model=f"openai/{model}")
+            # Caracal calls the configured OpenAI-compatible endpoint through the
+            # LiteLLM OpenAI adapter. The proxy resolves ``model`` as its public alias.
+            prepared_text = _prepare_embedding_text(text, model, input_type)
+            response = litellm.embedding(
+                input=[prepared_text], model=f"openai/{model}"
+            )
         except Exception as exc:  # noqa: BLE001 - sanitize service diagnostics
             # Provider clients sometimes include request details in exceptions.
             # Never allow a configured key to leak from index/check/MCP errors.
