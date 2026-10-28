@@ -111,8 +111,10 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument(
         "--model",
         default=None,
-        help="Embedding model exposed by the configured endpoint (for example multilingual-e5-base). "
-        "Prompts interactively when omitted.",
+        help=(
+            "Embedding model exposed by the configured endpoint "
+            "(for example multilingual-e5-base). Prompts interactively when omitted."
+        ),
     )
     setup_parser.add_argument(
         "--api-base",
@@ -168,7 +170,8 @@ def _write_manifest(config: AppConfig, indexer=None, embedding_dim: int | None =
 
 
 def run_check(config_path: str | None = None) -> None:
-    """Validate the active configuration and connectivity to configured embedding service and Chroma.
+    """Validate the active configuration and connectivity to the configured embedding service and
+    Chroma.
 
     Unlike a pure config parse, this actually connects to the configured
     endpoints: it asks Chroma for a heartbeat and issues a probe embedding
