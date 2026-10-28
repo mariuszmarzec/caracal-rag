@@ -221,6 +221,7 @@ class CaracalMcpServer:
             api_base=self.config.embedding.api_base,
             api_key=self.config.embedding.api_key,
             model=self.embedding_model,
+            input_type="query",
         )[0]
         assert_embedding_dim_consistent(self.collection, len(embedding))
         response = search_chunks(self.collection, embedding, top_k=top_k)
