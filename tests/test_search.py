@@ -91,3 +91,22 @@ def test_search_formatting(monkeypatch) -> None:
     assert "Source: api" in text
     assert "Document: login.md" in text
     assert "Login details." in text
+
+
+
+def test_search_uses_query_embedding_type(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_embed(texts, **kwargs):
+        calls.append({"texts": list(texts), **kwargs})
+        return [[0.1, 0.2]]
+
+    monkeypatch.setattr("caracal_rag.mcp._chroma_client", lambda *args, **kwargs: FakeChroma())
+    monkeypatch.setattr("caracal_rag.mcp.embed_texts", fake_embed)
+    monkeypatch.setattr("caracal_rag.mcp.Server", FakeServer)
+
+    server = CaracalMcpServer(AppConfig.from_yaml("config/sources.example.yaml"))
+    server.search("find login endpoint")
+
+    assert calls[0]["texts"] == ["find login endpoint"]
+    assert calls[0]["input_type"] == "query"
