@@ -144,7 +144,9 @@ def test_indexing_idempotency(monkeypatch: pytest.MonkeyPatch) -> None:
             # and embedding as well as metadata, while metadata-only checks omit them.
             metadata = {
                 "url": "https://example.com/login.md",
-                "embedding_model": AppConfig.from_yaml("config/sources.example.yaml").embedding.model,
+                "embedding_model": (
+                    AppConfig.from_yaml("config/sources.example.yaml").embedding.model
+                ),
                 "content_hash": Document.hash("# Login"),
                 "chunk_index": 0,
                 "caracal_staging": False,
