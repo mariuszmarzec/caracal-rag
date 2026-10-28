@@ -14,7 +14,7 @@ update.sh                 Safe Git update + reinstall + validation
 
 ## What is caracal-rag?
 
-`caracal-rag` provides a local retrieval-augmented generation pipeline that downloads knowledge sources, chunks documents, generates embeddings through FreeLLMAPI (or any OpenAI-compatible proxy), and stores vectors in a remote Chroma database. It also exposes an MCP server so an LLM agent can search indexed knowledge.
+`caracal-rag` provides a local retrieval-augmented generation pipeline that downloads knowledge sources, chunks documents, generates embeddings through an OpenAI-compatible endpoint, and stores vectors in Chroma. The recommended local setup serves `qllama/multilingual-e5-base` from Ollama through a `multilingual-e5-base` alias in LiteLLM.
 
 ## Quick Start (Installation)
 
@@ -33,18 +33,18 @@ Configure the model and API key, then validate connectivity:
 
 ```bash
 # The API key is prompted with input hidden; it is not placed in shell history.
-caracal-rag setup --model bge-m3
+caracal-rag setup --model multilingual-e5-base --api-base http://127.0.0.1:4000/v1
 
-# Validate connectivity to FreeLLMAPI and Chroma.
+# Validate connectivity to LiteLLM and Chroma.
 caracal-rag check
 ```
 
 For a non-interactive shell, read the key without echoing it and let the CLI persist it privately:
 
 ```bash
-read -rsp "FreeLLMAPI API key: " CARACAL_EMBEDDING_API_KEY; echo
+read -rsp "LiteLLM API key: " CARACAL_EMBEDDING_API_KEY; echo
 export CARACAL_EMBEDDING_API_KEY
-caracal-rag setup --model bge-m3
+caracal-rag setup --model multilingual-e5-base --api-base http://127.0.0.1:4000/v1
 unset CARACAL_EMBEDDING_API_KEY
 ```
 
@@ -117,7 +117,7 @@ The active configuration lives under `~/.caracal`:
 - `~/.caracal/index/manifest.json` — durable record of the collection and embedding space used to build the index.
 
 Secrets can also be supplied via environment variables, which take precedence over `secrets.yaml`:
-- `CARACAL_EMBEDDING_API_KEY` — the FreeLLMAPI API key.
+- `CARACAL_EMBEDDING_API_KEY` — API key for the configured OpenAI-compatible embedding endpoint (the LiteLLM master key for the local Ollama setup).
 - `CARACAL_ACCESS_TOKEN` — the access token that protects the MCP interface.
 - `CARACAL_MCP_TRANSPORT` — `http` (default, authenticated) or `stdio` transport for the MCP server.
 - `CARACAL_MCP_HOST`, `CARACAL_MCP_PORT`, `CARACAL_MCP_PATH` — bind address for the `http` transport.
@@ -143,18 +143,29 @@ access_token:
 
 The token value itself is never written into `sources.yaml`; it lives in `secrets.yaml` under `access_token.token` (or in the `CARACAL_ACCESS_TOKEN` environment variable). It must be at least 8 characters long. Comparisons are constant-time via `secrets.compare_digest`, and errors never echo the configured token.
 
-### FreeLLMAPI Embedding Models
+### Local multilingual-e5-base through LiteLLM
 
-FreeLLMAPI exposes embedding models via its OpenAI-compatible `/v1/embeddings` endpoint. See the [FreeLLMAPI embeddings API documentation](https://github.com/tashfeenahmed/freellmapi/blob/main/docs/en/api/01-rest-api.md#embeddings) and check **Models → Embeddings** in your own deployment for available families. Example families include:
-- `bge-m3` (1024-dim, default recommended)
-- `qwen3-embedding-0.6b` (1024-dim)
-- `nv-embedqa-e5-v5` (1024-dim)
-- `embed-v4.0` (1536-dim)
-- `llama-nemotron-embed-1b-v2` (2048-dim)
-- `gemini-embedding-001` (3072-dim)
-- `embeddinggemma-300m` (768-dim)
+The default local setup uses Ollama model `qllama/multilingual-e5-base` and exposes it through LiteLLM under the stable alias `multilingual-e5-base`. Add this entry under `model_list` in `~/litellm/config.yaml`:
 
-`embedding.model` is configured explicitly; `bge-m3` is the shipped template value and can be changed to a family enabled in your deployment. Do not use `auto`: this client must know the effective family so it can protect the existing index if FreeLLMAPI defaults change. Vectors from different families are not interchangeable, even if dimensions happen to match.
+```yaml
+  - model_name: multilingual-e5-base
+    litellm_params:
+      model: ollama/qllama/multilingual-e5-base
+      api_base: http://localhost:11434
+      api_key: ollama-local
+```
+
+Pull the model once on each machine:
+
+```bash
+ollama pull qllama/multilingual-e5-base
+```
+
+Configure Caracal to call the LiteLLM OpenAI-compatible embeddings endpoint at `http://127.0.0.1:4000/v1`, with `embedding.model: multilingual-e5-base`. Store the LiteLLM proxy key in `CARACAL_EMBEDDING_API_KEY` or `~/.caracal/config/secrets.yaml`; the key is not the Ollama key used by the upstream model entry.
+
+`multilingual-e5-base` produces 768-dimensional vectors and expects task-specific prefixes for retrieval. Caracal automatically sends `passage: ` before document chunks and `query: ` before search queries. Do not add those prefixes manually to source files or queries.
+
+FreeLLMAPI and other OpenAI-compatible embedding providers remain supported when their endpoint and model alias are configured explicitly. Never use `auto`: the manifest records the selected model, and vectors from different embedding families are not interchangeable even when their dimensions happen to match.
 
 ### Source Types
 
@@ -254,7 +265,7 @@ If you have local edits you intentionally want to install without pulling from G
 bash ./update.sh --no-pull
 ```
 
-To skip the connectivity check (for example, when FreeLLMAPI or Chroma is temporarily unreachable):
+To skip the connectivity check (for example, when the embedding service or Chroma is temporarily unreachable):
 
 ```bash
 bash ./update.sh --skip-check
@@ -279,10 +290,10 @@ The installed runtime uses the active venv and configuration under `~/.caracal`;
 Run `caracal-rag setup` and enter the new key and token at the hidden prompts. In a scripted shell, use non-echoing prompts rather than putting secrets in literal commands:
 
 ```bash
-read -rsp "New FreeLLMAPI API key: " CARACAL_EMBEDDING_API_KEY; echo
+read -rsp "New embedding endpoint API key: " CARACAL_EMBEDDING_API_KEY; echo
 read -rsp "New access token: " CARACAL_ACCESS_TOKEN; echo
 export CARACAL_EMBEDDING_API_KEY CARACAL_ACCESS_TOKEN
-caracal-rag setup --model bge-m3
+caracal-rag setup --model multilingual-e5-base --api-base http://127.0.0.1:4000/v1
 unset CARACAL_EMBEDDING_API_KEY CARACAL_ACCESS_TOKEN
 ```
 
@@ -311,7 +322,7 @@ bash ./backup.sh --output "$HOME/caracal-backups/pre-upgrade-2026-10-21"
 The default is a new timestamped folder under `~/caracal-backups`; `CARACAL_BACKUP_ROOT` can select a different parent. The output directory and its subdirectories are mode `0700`; saved files are mode `0600`. The script fails instead of overwriting an existing destination, refuses symlinked state directories/files, and never prints secret values. The backup contains:
 
 - `config/sources.yaml` — source, embedding, Chroma collection and MCP configuration;
-- `config/secrets.yaml` — the FreeLLMAPI API key and MCP access token, if configured;
+- `config/secrets.yaml` — the LiteLLM API key and MCP access token, if configured;
 - `index/manifest.json` — included only if it exists, identifying the collection and embedding space recorded by Caracal;
 - `BACKUP-INFO.txt` — format/time and an explicit `chroma_vectors=included:NO` marker.
 
