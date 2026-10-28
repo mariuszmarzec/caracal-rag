@@ -75,7 +75,7 @@ def embed_texts(
     if str(model).strip().lower() == "auto":
         raise ValueError(
             "The embedding model 'auto' is unsafe for a persistent index because the "
-            "effective FreeLLMAPI family may change. Configure an explicit family/model."
+            "effective embedding model may change. Configure an explicit model."
         )
     _get_embedding_client(api_base=api_base, api_key=api_key)
     vectors: list[list[float]] = []
@@ -99,7 +99,7 @@ def embed_texts(
 def redact_secret(text: str, secret: str | None) -> str:
     """Return ``text`` with any occurrence of ``secret`` replaced by ``***``.
 
-    Error messages must never echo the FreeLLMAPI key, so diagnostics redact it
+    Error messages must never echo the configured embedding API key, so diagnostics redact it
     before being printed or logged.
     """
     if not secret:
@@ -147,8 +147,8 @@ def validate_embedding_endpoint(
     if not str(model or "").strip():
         raise ConfigError(
             "No embedding model is configured. Set `embedding.model` in the "
-            "active configuration (for example `embedding.model: bge-m3`) after "
-            "checking what is enabled under FreeLLMAPI Models -> Embeddings."
+            "active configuration (for example `embedding.model: multilingual-e5-base`) after "
+            "checking that the model is available at the configured embedding endpoint."
         )
     try:
         probe_embedding_dim(api_base=api_base, model=model, api_key=api_key)
@@ -156,8 +156,8 @@ def validate_embedding_endpoint(
         message = redact_secret(str(exc), api_key)
         raise ConfigError(
             f"Embedding endpoint at {_normalize_api_base(api_base)!r} could not "
-            f"serve model {model!r}: {message}. Verify the FreeLLMAPI service is "
+            f"serve model {model!r}: {message}. Verify the configured embedding service is "
             "running, the base URL is correct, and that model is enabled under "
-            "FreeLLMAPI Models -> Embeddings."
+            "the configured endpoint exposes this model."
         ) from exc
 
