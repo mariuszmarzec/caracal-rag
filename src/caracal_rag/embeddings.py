@@ -46,7 +46,9 @@ def _uses_e5_prefixes(model: str) -> bool:
     return re.search(r"(^|[/:-])e5([/:-]|$)", normalized) is not None
 
 
-def _prepare_embedding_text(text: str, model: str, input_type: Literal["query", "passage"]) -> str:
+def _prepare_embedding_text(
+    text: str, model: str, input_type: Literal["query", "passage"]
+) -> str:
     if input_type not in {"query", "passage"}:
         raise ValueError("input_type must be 'query' or 'passage'.")
     if not _uses_e5_prefixes(model):
