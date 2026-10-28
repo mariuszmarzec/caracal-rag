@@ -103,10 +103,11 @@ def _make_config() -> AppConfig:
 
 
 def _patch_embed(monkeypatch: pytest.MonkeyPatch, captured: dict[str, Any]) -> None:
-    def fake_embed(texts, api_base, api_key=None, model=None):
+    def fake_embed(texts, api_base, api_key=None, model=None, input_type="query"):
         captured["texts"] = list(texts)
         captured["api_base"] = api_base
         captured["model"] = model
+        captured["input_type"] = input_type
         return [[0.1, 0.2] for _ in texts]
 
     monkeypatch.setattr("caracal_rag.indexing.embed_texts", fake_embed)
@@ -672,7 +673,7 @@ def test_embedding_failure_preserves_existing_vectors(monkeypatch: pytest.Monkey
 
     call_count = {"embed": 0}
 
-    def fake_embed(texts, api_base, api_key=None, model=None):
+    def fake_embed(texts, api_base, api_key=None, model=None, input_type="query"):
         call_count["embed"] += 1
         if call_count["embed"] == 2:
             raise RuntimeError("Embedding service unavailable")
