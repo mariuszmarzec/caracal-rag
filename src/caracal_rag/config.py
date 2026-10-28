@@ -126,7 +126,8 @@ class SourceConfig:
 
 @dataclass
 class EmbeddingConfig:
-    #: Explicit embedding model served by the configured OpenAI-compatible endpoint. There is intentionally no
+    #: Explicit model served by the configured OpenAI-compatible endpoint. There is intentionally no
+    #:
     #: built-in default: silently choosing a model would let an index be built
     #: in an embedding space the user did not pick.
     model: str
@@ -308,7 +309,7 @@ class AppConfig:
 
 
 def load_secrets(path: Path) -> dict[str, str]:
-    """Load user secrets (the embedding endpoint API key and the access token) from the secrets file.
+    """Load user secrets (embedding endpoint API key and access token) from the secrets file.
 
     The file must not be readable by group or other users; a loose mode is
     refused rather than silently read, because the key must never sit in a
