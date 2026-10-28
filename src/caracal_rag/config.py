@@ -127,8 +127,8 @@ class SourceConfig:
 @dataclass
 class EmbeddingConfig:
     #: Explicit model served by the configured OpenAI-compatible endpoint.
-    #: There is intentionally no built-in default: silently choosing a model would let an index be built
-    #: in an embedding space the user did not pick.
+    #: There is intentionally no built-in default: silently choosing a model
+    #: would let an index be built in an embedding space the user did not pick.
     model: str
     api_base: str = field(
         default_factory=lambda: os.getenv("CARACAL_EMBEDDING_API_BASE", DEFAULT_EMBEDDING_API_BASE)
