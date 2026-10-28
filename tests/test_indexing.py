@@ -370,6 +370,7 @@ def test_indexer_passes_configured_embedding_model(monkeypatch: pytest.MonkeyPat
 
     Indexer(config=config).run()
     assert captured.get("model") == config.embedding.model
+    assert captured.get("input_type") == "passage"
 
 
 def test_transient_fetch_failure_preserves_existing_vectors(
