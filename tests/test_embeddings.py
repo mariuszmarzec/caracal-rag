@@ -34,7 +34,6 @@ def test_embed_texts_uses_openai_provider_for_freellmapi(
     assert embeddings.litellm.api_key == "test-key"
 
 
-
 def test_e5_model_uses_query_and_passage_prefixes(monkeypatch) -> None:
     calls: list[dict] = []
 
