@@ -199,6 +199,7 @@ class Indexer:
             api_base=self.config.embedding.api_base,
             api_key=self.config.embedding.api_key,
             model=self.embedding_model,
+            input_type="passage",
         )
 
         # The dimension is established on the first successful embedding of the
