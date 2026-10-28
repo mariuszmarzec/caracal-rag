@@ -111,13 +111,13 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument(
         "--model",
         default=None,
-        help="FreeLLMAPI embedding family/model (for example bge-m3). "
+        help="Embedding model exposed by the configured endpoint (for example multilingual-e5-base). "
         "Prompts interactively when omitted.",
     )
     setup_parser.add_argument(
         "--api-base",
         default=None,
-        help="FreeLLMAPI base URL (default: http://localhost:3001/v1)",
+        help="OpenAI-compatible embedding API base URL (default: http://127.0.0.1:4000/v1)",
     )
     # The access token is intentionally NOT a CLI argument: command-line
     # arguments leak through shell history and process listings. It is supplied
@@ -168,7 +168,7 @@ def _write_manifest(config: AppConfig, indexer=None, embedding_dim: int | None =
 
 
 def run_check(config_path: str | None = None) -> None:
-    """Validate the active configuration and connectivity to FreeLLMAPI and Chroma.
+    """Validate the active configuration and connectivity to configured embedding service and Chroma.
 
     Unlike a pure config parse, this actually connects to the configured
     endpoints: it asks Chroma for a heartbeat and issues a probe embedding
@@ -266,17 +266,17 @@ def run_mcp(
 
 
 def _ensure_api_key(config: AppConfig) -> None:
-    """Fail early with actionable guidance when the FreeLLMAPI key is absent.
+    """Fail early with actionable guidance when the embedding endpoint API key is absent.
 
     The key is never echoed: the message only names where to obtain it.
     """
     if not config.embedding.api_key:
         raise ConfigError(
-            f"No FreeLLMAPI API key is configured. Provide one by running "
+            f"No embedding endpoint API key is configured. Provide one by running "
             "'caracal-rag setup', by exporting "
             f"{EMBEDDING_API_KEY_ENV}, or by setting `embedding.api_key` in the "
             "secrets file under your Caracal home (~/.caracal/config/secrets.yaml). "
-            "The key must be a valid key for the configured FreeLLMAPI endpoint."
+            "The key must be a valid key for the configured configured embedding service endpoint."
         )
 
 
@@ -328,8 +328,8 @@ def _probe_dim(config: AppConfig) -> int:
             f"Could not probe the embedding endpoint at "
             f"{config.embedding.api_base!r} for model {config.embedding.model!r}: "
             f"{redact_secret(str(exc), config.embedding.api_key)}. Verify the "
-            "FreeLLMAPI service is running, the base URL is correct, and that "
-            "model is enabled under FreeLLMAPI Models -> Embeddings."
+            "configured embedding service is running, the base URL is correct, and that "
+            "model is enabled under configured embedding endpoint."
         ) from exc
 
 
@@ -382,17 +382,17 @@ def run_setup(
 
     resolved_api_base = (
         api_base
-        or (existing.embedding.api_base if existing else "http://localhost:3001/v1")
-        or "http://localhost:3001/v1"
+        or (existing.embedding.api_base if existing else "http://127.0.0.1:4000/v1")
+        or "http://127.0.0.1:4000/v1"
     )
     resolved_model = model or (existing.embedding.model if existing else None)
     if not resolved_model:
         if interactive:
-            resolved_model = input("Embedding family/model (e.g. bge-m3): ").strip() or None
+            resolved_model = input("Embedding family/model (e.g. multilingual-e5-base): ").strip() or None
         if not resolved_model:
             raise ConfigError(
                 "No embedding model supplied. Re-run with --model <family> "
-                "(check your FreeLLMAPI Models -> Embeddings page for what is "
+                "(check your configured embedding endpoint page for what is "
                 "available in your deployment)."
             )
 
@@ -402,11 +402,11 @@ def run_setup(
         if interactive:
             import getpass
 
-            prompt = "FreeLLMAPI API key (input hidden): "
+            prompt = "embedding endpoint API key (input hidden): "
             resolved_api_key = getpass.getpass(prompt).strip() or None
         if not resolved_api_key:
             raise ConfigError(
-                "No FreeLLMAPI API key supplied. Enter it at the hidden prompt, "
+                "No embedding endpoint API key supplied. Enter it at the hidden prompt, "
                 f"or export {EMBEDDING_API_KEY_ENV} and re-run `caracal-rag setup`. "
                 "Do not pass the key as a command-line argument: arguments can "
                 "leak through shell history and process listings."
@@ -490,7 +490,7 @@ def run_setup(
         )
         raise
     print(f"Configured {home.config_path} (model={config.embedding.model!r})")
-    print(f"Stored FreeLLMAPI API key at {home.secrets_path} (mode 0600)")
+    print(f"Stored embedding endpoint API key at {home.secrets_path} (mode 0600)")
     print(f"Stored access token at {home.secrets_path} (mode 0600)")
     print("Run 'caracal-rag check' to validate connectivity.")
 
