@@ -205,29 +205,29 @@ The report includes Hit Rate, Recall and Mean Reciprocal Rank (MRR) at the avail
 
 ### Update an existing installation
 
-The Python package runs from the active environment under \`~/.caracal\`, while the commands below are run from the source checkout (normally \`~/.caracal-rag\`). Once the benchmark changes are on the branch you use for updates, run:
+The Python package runs from the active environment under `~/.caracal`, while the commands below are run from the source checkout (normally `~/.caracal-rag`). Once the benchmark changes are on the branch you use for updates, run:
 
-\`\`\`bash
+```bash
 cd "$HOME/.caracal-rag"
 git status --short
 bash ./update.sh
-\`\`\`
+```
 
-The default updater requires a clean worktree and an upstream branch, performs a fast-forward-only pull, installs a candidate environment, and runs \`caracal-rag check\` before activating it. It preserves \`~/.caracal/config/sources.yaml\`, \`secrets.yaml\`, the local manifest and the Chroma collection; it does not rebuild or delete the index. It also does not restart an MCP process.
+The default updater requires a clean worktree and an upstream branch, performs a fast-forward-only pull, installs a candidate environment, and runs `caracal-rag check` before activating it. It preserves `~/.caracal/config/sources.yaml`, `secrets.yaml`, the local manifest and the Chroma collection; it does not rebuild or delete the index. It also does not restart an MCP process.
 
-If the checkout already contains the benchmark code but you intentionally want to install that checkout without pulling from Git, run \`bash ./update.sh --no-pull\` from the repository root. Use this only when the current checkout actually contains the changes you want to install. The source checkout must remain available because the starter dataset lives at \`benchmarks/queries.example.json\`.
+If the checkout already contains the benchmark code but you intentionally want to install that checkout without pulling from Git, run `bash ./update.sh --no-pull` from the repository root. Use this only when the current checkout actually contains the changes you want to install. The source checkout must remain available because the starter dataset lives at `benchmarks/queries.example.json`.
 
 After the update succeeds, run the following from the repository root:
 
-\`\`\`bash
+```bash
 caracal-rag audit --output "$HOME/.caracal/index/audit-report.json"
 caracal-rag benchmark \\
   --dataset benchmarks/queries.example.json \\
   --top-k 10 \\
   --output "$HOME/.caracal/index/retrieval-benchmark.json"
-\`\`\`
+```
 
-The audit needs Chroma but not the embedding endpoint. The retrieval benchmark needs both Chroma and the configured embedding endpoint, but no chat LLM. If \`caracal-rag\` is not on \`PATH\`, use \`"$HOME/.caracal/bin/caracal-rag"\` in place of \`caracal-rag\`.
+The audit needs Chroma but not the embedding endpoint. The retrieval benchmark needs both Chroma and the configured embedding endpoint, but no chat LLM. If `caracal-rag` is not on `PATH`, use `"$HOME/.caracal/bin/caracal-rag"` in place of `caracal-rag`.
 
 ## Running the Embedding Pipeline
 
