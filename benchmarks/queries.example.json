@@ -61,8 +61,8 @@
       "id": "fiteo-response-shapes",
       "query": "What is the response event format for the server-sent events (SSE) endpoint?",
       "expected_terms": [
-        "response",
-        "schema"
+        "event",
+        "stream"
       ],
       "relevant_urls": [
         "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/sse.md"
@@ -81,10 +81,10 @@
     },
     {
       "id": "fiteo-filtering",
-      "query": "How can I retrieve and filter categories through the categories API endpoint?",
+      "query": "What does the GET categories endpoint return, and does it require authentication?",
       "expected_terms": [
-        "query",
-        "filter"
+        "categories",
+        "authentication"
       ],
       "relevant_urls": [
         "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/categories_get.md"
