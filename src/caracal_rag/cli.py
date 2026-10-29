@@ -592,9 +592,15 @@ def run_benchmark(
     for case in report["cases"]:
         best = case["retrieved"][0] if case["retrieved"] else {}
         best_target = best.get("url") or best.get("document") or "<no results>"
+        term_coverage = case["expected_term_coverage"]
+        term_coverage_label = f"{term_coverage:.3f}" if term_coverage is not None else "n/a"
+        evidence_rank = case["evidence_rank"]
+        evidence_rank_label = str(evidence_rank) if evidence_rank is not None else "not-found"
         print(
-            f"case={case['id']} hit={case['hit']} recall={case['recall']:.3f} "
-            f"mrr={case['reciprocal_rank']:.3f} first_result={best_target}"
+            f"case={case['id']} document_hit={case['document_hit']} "
+            f"document_mrr={case['document_reciprocal_rank']:.3f} "
+            f"evidence_hit={case['evidence_hit']} evidence_rank={evidence_rank_label} "
+            f"target_term_coverage={term_coverage_label} first_result={best_target}"
         )
     if output_path:
         destination = write_report(report, output_path)

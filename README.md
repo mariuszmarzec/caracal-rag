@@ -194,15 +194,21 @@ caracal-rag benchmark \
   --dataset benchmarks/queries.example.json \
   --top-k 10 \
   --output "$HOME/.caracal/index/retrieval-benchmark.json"
+
+# Diagnose whether answer-bearing chunks appear after rank 10.
+caracal-rag benchmark \
+  --dataset benchmarks/queries.example.json \
+  --top-k 20 \
+  --output "$HOME/.caracal/index/retrieval-benchmark-top20.json"
 ```
 
 The command requires the configured Chroma collection and embedding endpoint to be reachable. The benchmark is never run by CI; `pytest` only tests the scoring and report logic with fake backend responses.
 
-The checked-in 12-case starter set now uses `relevant_urls` rather than source-wide labels, so a hit requires retrieving the intended document, not merely any page from the same source. It remains a smoke test, not a statistically strong quality baseline: manually verify that each labelled URL actually supports the query, because labels selected without reading the target documents can still make the scores misleading. For a meaningful baseline, create a private dataset with around 50 representative, answerable questions from real agent tasks, including paraphrases, Polish/English queries and multi-document questions. Questions whose answers are absent from the index need a separate end-to-end abstention/answer-grounding benchmark.
+The checked-in 12-case starter set uses `relevant_urls` and `relevant_chunk_terms`. A document hit only means that the expected document was retrieved; it does not by itself prove that a chunk contains useful answer evidence. Evidence metrics additionally require at least one labelled term group to co-occur within one retrieved chunk from an expected target. These groups are a transparent, deterministic evidence proxy, not an LLM judgement or a substitute for manually reviewing chunk content. Verify every labelled URL and term group against the source documents before treating the scores as a quality baseline.
 
-Each dataset is a UTF-8 JSON object with `version: 1` and a non-empty `cases` array. A case requires a unique `id`, a `query`, and at least one non-empty target list: `relevant_urls`, `relevant_documents`, or `relevant_sources`. When more than one target type is present, scoring uses the most specific available type in this order: URL, document name, then source. `expected_terms` is optional and reports whether selected terms appear in the retrieved snippets; it is a diagnostic, not a substitute for labelled relevance.
+Each dataset is a UTF-8 JSON object with `version: 1` and a non-empty `cases` array. A case requires a unique `id`, a `query`, and at least one non-empty target list: `relevant_urls`, `relevant_documents`, or `relevant_sources`. When more than one target type is present, scoring uses the most specific available type in this order: URL, document name, then source. `expected_terms` measures how many selected terms appear in chunks from the expected target; terms found only in unrelated results do not count. Optional `relevant_chunk_terms` is an array of non-empty term groups. Every term in a group must appear in the same returned chunk for that target document for the group to count as chunk evidence. If omitted, each expected term is treated as an independent evidence signal.
 
-The report includes Hit Rate, Recall and Mean Reciprocal Rank (MRR) at the available cutoffs up to `--top-k`, plus expected-term coverage and mean query latency. Retrieval metrics are only as trustworthy as the ground-truth labels. Keep your dataset and reports local if the questions, document URLs or content previews reveal private information.
+The version-2 report keeps document retrieval separate from chunk evidence. `document_hit_rate_at_k`, `document_recall_at_k`, and `document_mrr_at_k` measure whether expected documents appear and how early. `evidence_hit_rate_at_k` and `evidence_mrr_at_k` measure whether chunks match a labelled evidence group and their rank; `relevant_chunk_group_coverage_at_k` shows how many labelled groups are retrieved. `expected_term_coverage_at_k` only counts terms found inside expected-target chunks. With `--top-k 20`, the report includes cutoffs at both 10 and 20, so you can see whether evidence lands just outside the top 10. These deterministic term-based signals are a diagnostic proxy, not semantic proof that a chunk fully answers a question. Keep datasets and reports local if they reveal private information.
 
 
 ### Update an existing installation

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "URL-labelled starter smoke-test set. Verify every URL against the intended answer and expand this into a representative local evaluation set before treating metrics as a quality baseline.",
+  "description": "URL-labelled retrieval smoke-test set. relevant_chunk_terms defines terms that must co-occur in an individual chunk from the labelled target document to count as retrieved evidence. Verify labels and expand this into a representative local evaluation set before treating metrics as a quality baseline.",
   "cases": [
     {
       "id": "fiteo-authentication",
@@ -11,6 +11,16 @@
       ],
       "relevant_urls": [
         "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/login_bearer.md"
+      ],
+      "relevant_chunk_terms": [
+        [
+          "authorization",
+          "bearer"
+        ],
+        [
+          "JWT",
+          "Authorization"
+        ]
       ]
     },
     {
@@ -22,6 +32,16 @@
       ],
       "relevant_urls": [
         "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/trainings_get.md"
+      ],
+      "relevant_chunk_terms": [
+        [
+          "cursor",
+          "id"
+        ],
+        [
+          "limit",
+          "nextCursor"
+        ]
       ]
     },
     {
@@ -33,6 +53,14 @@
       ],
       "relevant_urls": [
         "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/trainings_create.md"
+      ],
+      "relevant_chunk_terms": [
+        [
+          "POST /fiteo/api/1/trainings"
+        ],
+        [
+          "templateTrainingId"
+        ]
       ]
     },
     {
@@ -44,6 +72,15 @@
       ],
       "relevant_urls": [
         "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/trainings_update.md"
+      ],
+      "relevant_chunk_terms": [
+        [
+          "PATCH /fiteo/api/1/trainings"
+        ],
+        [
+          "finishDateInMillis",
+          "exercisesWithProgress"
+        ]
       ]
     },
     {
@@ -55,6 +92,12 @@
       ],
       "relevant_urls": [
         "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/pat_tokens_create.md"
+      ],
+      "relevant_chunk_terms": [
+        [
+          "400 Bad Request",
+          "expiresIn"
+        ]
       ]
     },
     {
@@ -66,6 +109,14 @@
       ],
       "relevant_urls": [
         "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/sse.md"
+      ],
+      "relevant_chunk_terms": [
+        [
+          "text/event-stream"
+        ],
+        [
+          "data: UPDATE"
+        ]
       ]
     },
     {
@@ -77,6 +128,17 @@
       ],
       "relevant_urls": [
         "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/pat_tokens_create.md"
+      ],
+      "relevant_chunk_terms": [
+        [
+          "token",
+          "expiration"
+        ],
+        [
+          "THREE_MONTHS",
+          "SIX_MONTHS",
+          "NEVER"
+        ]
       ]
     },
     {
@@ -88,6 +150,18 @@
       ],
       "relevant_urls": [
         "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/categories_get.md"
+      ],
+      "relevant_chunk_terms": [
+        [
+          "CategoryDto"
+        ],
+        [
+          "Authentication"
+        ],
+        [
+          "does not require a session",
+          "bearer token"
+        ]
       ]
     },
     {
@@ -99,6 +173,12 @@
       ],
       "relevant_urls": [
         "https://raw.githubusercontent.com/mariuszmarzec/QuickMVI/develop/README.md"
+      ],
+      "relevant_chunk_terms": [
+        [
+          "state-management",
+          "Kotlin Multiplatform"
+        ]
       ]
     },
     {
@@ -110,6 +190,12 @@
       ],
       "relevant_urls": [
         "https://raw.githubusercontent.com/mariuszmarzec/QuickMVI/develop/README.md"
+      ],
+      "relevant_chunk_terms": [
+        [
+          "io.github.mariuszmarzec:quickmvi:1.3.0",
+          "implementation"
+        ]
       ]
     },
     {
@@ -121,17 +207,30 @@
       ],
       "relevant_urls": [
         "https://raw.githubusercontent.com/mariuszmarzec/QuickMVI/develop/README.md"
+      ],
+      "relevant_chunk_terms": [
+        [
+          "reducer",
+          "sideEffect"
+        ]
       ]
     },
     {
       "id": "quickmvi-platforms",
-      "query": "Which platforms and Kotlin targets does QuickMVI support?",
+      "query": "Which development platforms and UI frameworks does the QuickMVI README mention?",
       "expected_terms": [
         "kotlin",
         "multiplatform"
       ],
       "relevant_urls": [
         "https://raw.githubusercontent.com/mariuszmarzec/QuickMVI/develop/README.md"
+      ],
+      "relevant_chunk_terms": [
+        [
+          "Kotlin Multiplatform",
+          "Jetpack Compose",
+          "Android"
+        ]
       ]
     }
   ]

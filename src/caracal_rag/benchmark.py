@@ -20,7 +20,8 @@ from caracal_rag.vectorstore import (
     search_chunks,
 )
 
-SCHEMA_VERSION = 1
+AUDIT_SCHEMA_VERSION = 1
+BENCHMARK_SCHEMA_VERSION = 2
 MAX_TOP_K = 20
 DEFAULT_TOP_K = 10
 
@@ -259,7 +260,7 @@ def audit_index(config: AppConfig) -> dict[str, Any]:
         )
 
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": AUDIT_SCHEMA_VERSION,
         "generated_at": _now(),
         "collection": config.chroma.collection,
         "expected_embedding_model": config.embedding.model,
@@ -342,6 +343,17 @@ def load_benchmark_dataset(path: str | Path) -> list[dict[str, Any]]:
             raise ValueError(
                 f"expected_terms in benchmark case {case_id!r} must be a string array."
             )
+        relevant_chunk_terms = case.get("relevant_chunk_terms", [])
+        if not isinstance(relevant_chunk_terms, list) or any(
+            not isinstance(group, list)
+            or not group
+            or any(not isinstance(term, str) or not term.strip() for term in group)
+            for group in relevant_chunk_terms
+        ):
+            raise ValueError(
+                f"relevant_chunk_terms in benchmark case {case_id!r} must be an array "
+                "of non-empty string arrays. Every group must be supported by one chunk."
+            )
         validated.append(
             {
                 "id": case_id,
@@ -350,6 +362,10 @@ def load_benchmark_dataset(path: str | Path) -> list[dict[str, Any]]:
                 "expected_terms": list(
                     dict.fromkeys(term.strip() for term in terms if term.strip())
                 ),
+                "relevant_chunk_terms": [
+                    list(dict.fromkeys(term.strip() for term in group))
+                    for group in relevant_chunk_terms
+                ],
             }
         )
     return validated
@@ -409,7 +425,7 @@ def benchmark_retrieval(
     dataset_path: str | Path,
     top_k: int = DEFAULT_TOP_K,
 ) -> dict[str, Any]:
-    """Run a deterministic retrieval evaluation; no answer-generating LLM is used."""
+    """Evaluate document retrieval and chunk-level evidence; no chat LLM is used."""
     if type(top_k) is not int or not 1 <= top_k <= MAX_TOP_K:
         raise ValueError(f"top_k must be an integer between 1 and {MAX_TOP_K}.")
     cases = load_benchmark_dataset(dataset_path)
@@ -419,8 +435,6 @@ def benchmark_retrieval(
 
     case_results: list[dict[str, Any]] = []
     total_query_ms = 0.0
-    total_terms = 0
-    matched_terms = 0
     for case in cases:
         started = time.perf_counter()
         vectors = embed_texts(
@@ -441,24 +455,64 @@ def benchmark_retrieval(
 
         retrieved = _query_results(response)
         relevance_field, expected = _relevance_basis(case)
-        expected_set = {
-            _normalise_url(value) if relevance_field == "relevant_urls" else _normalise(value)
+        expected_targets = {
+            _normalise_url(value)
+            if relevance_field == "relevant_urls"
+            else _normalise(value)
             for value in expected
         }
+        expected_terms = case["expected_terms"]
+        # Explicit groups declare terms that must co-occur in one returned chunk.
+        # For datasets without groups, each expected term is an independent evidence
+        # signal, preserving a useful diagnostic for older/local benchmark files.
+        relevant_chunk_terms = case["relevant_chunk_terms"] or [
+            [term] for term in expected_terms
+        ]
         found_targets: set[str] = set()
-        relevant_ranks: list[int] = []
+        found_terms_in_target_chunks: set[str] = set()
+        found_chunk_groups: set[int] = set()
+        target_ranks: list[int] = []
+        evidence_ranks: list[int] = []
+
         for result in retrieved:
             target = _result_target(result, relevance_field)
-            if target and target in expected_set:
-                found_targets.add(target)
-                relevant_ranks.append(result["rank"])
+            is_target_chunk = bool(target and target in expected_targets)
+            chunk_text = result["content"].casefold()
+            terms_in_chunk = [
+                term for term in expected_terms if term.casefold() in chunk_text
+            ]
+            matched_groups = [
+                group_index
+                for group_index, group in enumerate(relevant_chunk_terms)
+                if all(term.casefold() in chunk_text for term in group)
+            ] if is_target_chunk else []
 
-        corpus_preview = "\n".join(result["content"] for result in retrieved).casefold()
-        found_terms = [term for term in case["expected_terms"] if term.casefold() in corpus_preview]
-        total_terms += len(case["expected_terms"])
+            result["matches_expected_target"] = is_target_chunk
+            result["found_expected_terms"] = terms_in_chunk
+            result["matched_relevant_chunk_groups"] = matched_groups
+            result["is_evidence_chunk"] = bool(matched_groups)
+
+            if is_target_chunk:
+                found_targets.add(target)
+                target_ranks.append(result["rank"])
+                found_terms_in_target_chunks.update(terms_in_chunk)
+                found_chunk_groups.update(matched_groups)
+            if matched_groups:
+                evidence_ranks.append(result["rank"])
+
+        target_chunk_coverage = (
+            len(found_terms_in_target_chunks) / len(expected_terms)
+            if expected_terms
+            else None
+        )
+        chunk_group_coverage = (
+            len(found_chunk_groups) / len(relevant_chunk_terms)
+            if relevant_chunk_terms
+            else None
+        )
         for result in retrieved:
             result.pop("content", None)
-        matched_terms += len(found_terms)
+
         case_results.append(
             {
                 "id": case["id"],
@@ -466,14 +520,21 @@ def benchmark_retrieval(
                 "relevance_basis": relevance_field,
                 "expected_targets": expected,
                 "found_targets": sorted(found_targets),
-                "hit": bool(relevant_ranks),
-                "reciprocal_rank": 1.0 / min(relevant_ranks) if relevant_ranks else 0.0,
-                "recall": len(found_targets) / len(expected_set) if expected_set else 0.0,
-                "expected_terms": case["expected_terms"],
-                "found_expected_terms": found_terms,
-                "expected_term_coverage": len(found_terms) / len(case["expected_terms"])
-                if case["expected_terms"]
-                else None,
+                "document_hit": bool(target_ranks),
+                "document_reciprocal_rank": 1.0 / min(target_ranks) if target_ranks else 0.0,
+                "document_recall": (
+                    len(found_targets) / len(expected_targets) if expected_targets else 0.0
+                ),
+                "evidence_hit": bool(evidence_ranks),
+                "evidence_rank": min(evidence_ranks) if evidence_ranks else None,
+                "expected_terms": expected_terms,
+                "found_expected_terms_in_target_chunks": [
+                    term for term in expected_terms if term in found_terms_in_target_chunks
+                ],
+                "expected_term_coverage": target_chunk_coverage,
+                "relevant_chunk_terms": relevant_chunk_terms,
+                "matched_relevant_chunk_groups": sorted(found_chunk_groups),
+                "relevant_chunk_group_coverage": chunk_group_coverage,
                 "latency_ms": round(elapsed_ms, 2),
                 "retrieved": retrieved,
             }
@@ -482,35 +543,88 @@ def benchmark_retrieval(
     cutoffs = sorted({cutoff for cutoff in (1, 3, 5, 10, top_k) if cutoff <= top_k})
     metrics: dict[str, Any] = {}
     for cutoff in cutoffs:
-        measured = [item["retrieved"][:cutoff] for item in case_results]
-        hits = []
-        recalls = []
-        reciprocal_ranks = []
-        for case, retrieved in zip(case_results, measured):
+        document_hits: list[bool] = []
+        document_recalls: list[float] = []
+        document_reciprocal_ranks: list[float] = []
+        evidence_hits: list[bool] = []
+        evidence_reciprocal_ranks: list[float] = []
+        chunk_group_coverages: list[float] = []
+        matched_expected_terms = 0
+        total_expected_terms = 0
+
+        for case in case_results:
+            retrieved = case["retrieved"][:cutoff]
             relevance_field = case["relevance_basis"]
-            expected_set = {
+            expected_targets = {
                 _normalise_url(value)
                 if relevance_field == "relevant_urls"
                 else _normalise(value)
                 for value in case["expected_targets"]
             }
             found: set[str] = set()
-            first_rank = None
-            for item in retrieved:
-                target = _result_target(item, relevance_field)
-                if target and target in expected_set:
+            first_target_rank: int | None = None
+            first_evidence_rank: int | None = None
+            found_groups: set[int] = set()
+            found_terms: set[str] = set()
+
+            for result in retrieved:
+                target = _result_target(result, relevance_field)
+                if target and target in expected_targets:
                     found.add(target)
-                    if first_rank is None:
-                        first_rank = item["rank"]
-            hits.append(bool(found))
-            recalls.append(len(found) / len(expected_set) if expected_set else 0.0)
-            reciprocal_ranks.append(1.0 / first_rank if first_rank else 0.0)
-        metrics[f"hit_rate_at_{cutoff}"] = round(sum(hits) / len(hits), 4)
-        metrics[f"recall_at_{cutoff}"] = round(sum(recalls) / len(recalls), 4)
-        metrics[f"mrr_at_{cutoff}"] = round(sum(reciprocal_ranks) / len(reciprocal_ranks), 4)
+                    if first_target_rank is None:
+                        first_target_rank = result["rank"]
+                    found_terms.update(result["found_expected_terms"])
+                    found_groups.update(result["matched_relevant_chunk_groups"])
+                if result["is_evidence_chunk"] and first_evidence_rank is None:
+                    first_evidence_rank = result["rank"]
+
+            document_hits.append(bool(found))
+            document_recalls.append(
+                len(found) / len(expected_targets) if expected_targets else 0.0
+            )
+            document_reciprocal_ranks.append(
+                1.0 / first_target_rank if first_target_rank else 0.0
+            )
+            evidence_hits.append(first_evidence_rank is not None)
+            evidence_reciprocal_ranks.append(
+                1.0 / first_evidence_rank if first_evidence_rank else 0.0
+            )
+
+            all_terms = case["expected_terms"]
+            matched_expected_terms += sum(term in found_terms for term in all_terms)
+            total_expected_terms += len(all_terms)
+            group_count = len(case["relevant_chunk_terms"])
+            if group_count:
+                chunk_group_coverages.append(len(found_groups) / group_count)
+
+        metrics[f"document_hit_rate_at_{cutoff}"] = round(
+            sum(document_hits) / len(document_hits), 4
+        )
+        metrics[f"document_recall_at_{cutoff}"] = round(
+            sum(document_recalls) / len(document_recalls), 4
+        )
+        metrics[f"document_mrr_at_{cutoff}"] = round(
+            sum(document_reciprocal_ranks) / len(document_reciprocal_ranks), 4
+        )
+        metrics[f"evidence_hit_rate_at_{cutoff}"] = round(
+            sum(evidence_hits) / len(evidence_hits), 4
+        )
+        metrics[f"evidence_mrr_at_{cutoff}"] = round(
+            sum(evidence_reciprocal_ranks) / len(evidence_reciprocal_ranks), 4
+        )
+        metrics[f"relevant_chunk_group_coverage_at_{cutoff}"] = (
+            round(sum(chunk_group_coverages) / len(chunk_group_coverages), 4)
+            if chunk_group_coverages
+            else None
+        )
+        metrics[f"expected_term_coverage_at_{cutoff}"] = (
+            round(matched_expected_terms / total_expected_terms, 4)
+            if total_expected_terms
+            else None
+        )
 
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": BENCHMARK_SCHEMA_VERSION,
         "generated_at": _now(),
         "dataset_path": str(Path(dataset_path).expanduser().resolve()),
         "collection": config.chroma.collection,
@@ -518,7 +632,7 @@ def benchmark_retrieval(
         "top_k": top_k,
         "case_count": len(case_results),
         "mean_latency_ms": round(total_query_ms / len(case_results), 2),
-        "expected_term_coverage": round(matched_terms / total_terms, 4) if total_terms else None,
+        "expected_term_coverage": metrics[f"expected_term_coverage_at_{top_k}"],
         "metrics": metrics,
         "cases": case_results,
     }
