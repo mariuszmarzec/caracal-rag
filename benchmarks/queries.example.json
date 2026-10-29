@@ -48,13 +48,13 @@
     },
     {
       "id": "fiteo-api-errors",
-      "query": "How are invalid requests and API errors represented?",
+      "query": "What error does the personal access token creation endpoint return for an invalid expiration policy?",
       "expected_terms": [
-        "error",
-        "status"
+        "bad request",
+        "expiresIn"
       ],
       "relevant_urls": [
-        "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/README.md"
+        "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/pat_tokens_create.md"
       ]
     },
     {
