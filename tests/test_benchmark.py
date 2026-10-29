@@ -243,7 +243,8 @@ def test_top_k_twenty_identifies_evidence_chunk_after_rank_ten(
         elif rank == 12:
             url, text = "https://example.com/auth.md", "Bearer access token setup details"
         else:
-            url, text = f"https://example.com/other-{rank}.md", f"Unrelated documentation chunk {rank}"
+            url = f"https://example.com/other-{rank}.md"
+            text = f"Unrelated documentation chunk {rank}"
         rows.append(
             (
                 f"chunk-{rank}",
