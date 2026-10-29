@@ -215,7 +215,12 @@ def audit_index(config: AppConfig) -> dict[str, Any]:
                 for dimension in stored_dimensions
                 if dimension.isdigit()
             }
-            if manifest.embedding_dim is not None and numeric_dimensions and (
+            if manifest.embedding_dim is None and numeric_dimensions:
+                warnings.append(
+                    "The local manifest does not record embedding_dim; the "
+                    f"committed collection vectors report {sorted(numeric_dimensions)}."
+                )
+            elif manifest.embedding_dim is not None and numeric_dimensions and (
                 numeric_dimensions != {manifest.embedding_dim}
             ):
                 warnings.append(
