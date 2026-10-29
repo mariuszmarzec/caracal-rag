@@ -580,6 +580,7 @@ def run_benchmark(
 ) -> None:
     """Run the local retrieval benchmark; only the configured embedding endpoint is used."""
     config = load_active_config(config_path)
+    _ensure_api_key(config)
     report = benchmark_retrieval(config, dataset_path, top_k=top_k)
     print(f"collection={report['collection']}")
     print(f"embedding_model={report['embedding_model']}")
