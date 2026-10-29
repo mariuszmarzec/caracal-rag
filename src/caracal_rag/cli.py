@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import sys
 
-from caracal_rag.benchmark import audit_index, benchmark_retrieval, write_report
-
 from caracal_rag.auth import redact_token
+from caracal_rag.benchmark import audit_index, benchmark_retrieval, write_report
 from caracal_rag.config import (
     ACCESS_TOKEN_ENV,
     EMBEDDING_API_KEY_ENV,
