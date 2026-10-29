@@ -82,7 +82,10 @@ def chunk_document(document: Document, max_chars: int = 1800) -> Iterable[Chunk]
         chunks = chunk_markdown(document.content, max_chars=max_chars)
     else:
         content = document.content
-        chunks = [content[i : i + max_chars] for i in range(0, len(content), max_chars)] or [content]
+        chunks = [
+            content[i : i + max_chars]
+            for i in range(0, len(content), max_chars)
+        ] or [content]
 
     for idx, text in enumerate(chunks):
         yield Chunk(
