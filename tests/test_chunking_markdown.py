@@ -68,7 +68,7 @@ def test_markdown_keeps_fenced_code_examples_as_retrieval_units() -> None:
     assert len(evidence_chunks) == 1
     assert "```kotlin" in evidence_chunks[0]
     assert "unrelated paragraph" not in evidence_chunks[0]
-    assert all(0 < len(chunk) <= 200 for chunk in chunks)
+    assert all(chunk.strip() and len(chunk) <= 200 for chunk in chunks)
     assert "".join(chunks) == content
 
 
