@@ -5,7 +5,7 @@ import json
 import math
 import statistics
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -181,7 +181,10 @@ def audit_index(config: AppConfig) -> dict[str, Any]:
         )
     stored_dimensions = set(embedding_dimensions) - {"<missing-or-invalid>"}
     if len(stored_dimensions) > 1:
-        warnings.append(f"Mixed stored embedding dimensions detected: {sorted(stored_dimensions)!r}.")
+        warnings.append(
+            "Mixed stored embedding dimensions detected: "
+            f"{sorted(stored_dimensions)!r}."
+        )
     if duplicate_groups:
         warnings.append(
             f"{duplicate_groups} exact-text duplicate group(s) found "
@@ -312,13 +315,17 @@ def load_benchmark_dataset(path: str | Path) -> list[dict[str, Any]]:
             )
         terms = case.get("expected_terms", [])
         if not isinstance(terms, list) or any(not isinstance(term, str) for term in terms):
-            raise ValueError(f"expected_terms in benchmark case {case_id!r} must be a string array.")
+            raise ValueError(
+                f"expected_terms in benchmark case {case_id!r} must be a string array."
+            )
         validated.append(
             {
                 "id": case_id,
                 "query": query.strip(),
                 **targets,
-                "expected_terms": list(dict.fromkeys(term.strip() for term in terms if term.strip())),
+                "expected_terms": list(
+                    dict.fromkeys(term.strip() for term in terms if term.strip())
+                ),
             }
         )
     return validated
@@ -397,7 +404,9 @@ def benchmark_retrieval(
             model=config.embedding.model,
         )
         if not vectors or not vectors[0]:
-            raise RuntimeError(f"Embedding endpoint returned an empty vector for case {case['id']!r}.")
+            raise RuntimeError(
+                f"Embedding endpoint returned an empty vector for case {case['id']!r}."
+            )
         query_embedding = vectors[0]
         assert_embedding_dim_consistent(collection, len(query_embedding))
         response = search_chunks(collection, query_embedding, top_k=top_k)
