@@ -37,16 +37,42 @@ def _md_sections(markdown: str) -> Iterable[tuple[int, int]]:
     return [(positions[i], positions[i + 1]) for i in range(len(positions) - 1)]
 
 
-def chunk_markdown(text: str, max_chars: int = 1800) -> list[str]:
-    sections = _md_sections(text)
+def chunk_markdown(
+    text: str,
+    max_chars: int = 1800,
+    target_chars: int = 400,
+) -> list[str]:
+    """Chunk Markdown by headings, grouping adjacent short sections together."""
+    target_chars = min(target_chars, max_chars)
     chunks: list[str] = []
-    for start, end in sections:
+    buffered_sections: list[str] = []
+    buffered_length = 0
+
+    def flush_buffer() -> None:
+        nonlocal buffered_length
+        if buffered_sections:
+            chunks.append("".join(buffered_sections))
+            buffered_sections.clear()
+            buffered_length = 0
+
+    for start, end in _md_sections(text):
         section = text[start:end]
-        if len(section) <= max_chars:
+        if len(section) > max_chars:
+            flush_buffer()
+            chunks.extend(
+                section[i : i + max_chars]
+                for i in range(0, len(section), max_chars)
+            )
+        elif len(section) >= target_chars:
+            flush_buffer()
             chunks.append(section)
         else:
-            for i in range(0, len(section), max_chars):
-                chunks.append(section[i:i + max_chars])
+            if buffered_sections and buffered_length + len(section) > target_chars:
+                flush_buffer()
+            buffered_sections.append(section)
+            buffered_length += len(section)
+
+    flush_buffer()
     return chunks or [text]
 
 
@@ -56,7 +82,10 @@ def chunk_document(document: Document, max_chars: int = 1800) -> Iterable[Chunk]
         chunks = chunk_markdown(document.content, max_chars=max_chars)
     else:
         content = document.content
-        chunks = [content[i:i + max_chars] for i in range(0, len(content), max_chars)] or [content]
+        chunks = [
+            content[i : i + max_chars]
+            for i in range(0, len(content), max_chars)
+        ] or [content]
 
     for idx, text in enumerate(chunks):
         yield Chunk(
