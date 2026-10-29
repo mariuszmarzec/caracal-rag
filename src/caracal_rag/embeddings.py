@@ -9,6 +9,8 @@ stored vectors incompatible with later queries.
 from __future__ import annotations
 
 import os
+import re
+from typing import Literal
 
 import litellm
 
@@ -39,11 +41,35 @@ def _get_embedding_client(api_base: str, api_key: str | None = None) -> None:
         litellm.api_key = os.getenv("LITELLM_API_KEY", None)
 
 
+def _uses_e5_prefixes(model: str) -> bool:
+    normalized = model.casefold()
+    return re.search(r"(^|[/:-])e5([/:-]|$)", normalized) is not None
+
+
+def _prepare_embedding_text(
+    text: str, model: str, input_type: Literal["query", "passage"]
+) -> str:
+    if input_type not in {"query", "passage"}:
+        raise ValueError("input_type must be 'query' or 'passage'.")
+    if not _uses_e5_prefixes(model):
+        return text
+
+    expected_prefix = f"{input_type}: "
+    if text.startswith(expected_prefix):
+        return text
+    if text.startswith("query: "):
+        text = text[len("query: ") :]
+    elif text.startswith("passage: "):
+        text = text[len("passage: ") :]
+    return expected_prefix + text
+
+
 def embed_texts(
     texts: list[str],
     api_base: str,
     model: str,
     api_key: str | None = None,
+    input_type: Literal["query", "passage"] = "passage",
 ) -> list[list[float]]:
     """Embed ``texts`` with the explicitly configured ``model``.
 
@@ -60,14 +86,18 @@ def embed_texts(
             "The embedding model 'auto' is unsafe for a persistent index because the "
             "effective FreeLLMAPI family may change. Configure an explicit family/model."
         )
+    if input_type not in {"query", "passage"}:
+        raise ValueError("input_type must be 'query' or 'passage'.")
+
     _get_embedding_client(api_base=api_base, api_key=api_key)
     vectors: list[list[float]] = []
     for text in texts:
+        prepared_text = _prepare_embedding_text(text, model, input_type)
         try:
             # FreeLLMAPI exposes an OpenAI-compatible /v1/embeddings endpoint. LiteLLM
             # requires the provider prefix to select its OpenAI adapter; the adapter
             # strips the prefix before sending the model id to the configured API base.
-            response = litellm.embedding(input=[text], model=f"openai/{model}")
+            response = litellm.embedding(input=[prepared_text], model=f"openai/{model}")
         except Exception as exc:  # noqa: BLE001 - sanitize service diagnostics
             # Provider clients sometimes include request details in exceptions.
             # Never allow a configured key to leak from index/check/MCP errors.
