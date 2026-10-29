@@ -74,7 +74,7 @@ def _markdown_blocks(section: str) -> list[str]:
         non_empty_lines = [line for line in block.splitlines() if line.strip()]
         heading_only = (
             len(non_empty_lines) == 1
-            and re.match(r"^#{1,6}[ \\t]+", non_empty_lines[0]) is not None
+            and re.match(r"^#{1,6}[ \t]+", non_empty_lines[0]) is not None
         )
         if heading_only and index + 1 < len(blocks):
             merged.append(block + blocks[index + 1])
@@ -151,7 +151,7 @@ def chunk_markdown(
                 for i in range(0, len(section), max_chars)
             )
         elif len(section) >= target_chars and re.search(
-            r"^[ \\t]*(?:`{3,}|~{3,})", section, re.MULTILINE
+            r"^[ \t]*(?:`{3,}|~{3,})", section, re.MULTILINE
         ):
             flush_buffer()
             chunks.extend(_chunk_code_section(section, max_chars, target_chars))
