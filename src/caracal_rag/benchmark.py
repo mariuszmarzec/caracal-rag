@@ -210,6 +210,26 @@ def audit_index(config: AppConfig) -> dict[str, Any]:
             }
             if not matches_config:
                 warnings.append("The local index manifest does not match the active configuration.")
+            numeric_dimensions = {
+                int(dimension)
+                for dimension in stored_dimensions
+                if dimension.isdigit()
+            }
+            if manifest.embedding_dim is not None and numeric_dimensions and (
+                numeric_dimensions != {manifest.embedding_dim}
+            ):
+                warnings.append(
+                    "The manifest embedding dimension does not match the committed "
+                    f"collection vectors (manifest={manifest.embedding_dim}, "
+                    f"collection={sorted(numeric_dimensions)})."
+                )
+            if committed_chunks and missing_url == 0 and (
+                manifest.document_count != len(committed_urls)
+            ):
+                warnings.append(
+                    "The manifest document count does not match the collection "
+                    f"(manifest={manifest.document_count}, collection={len(committed_urls)})."
+                )
     except Exception:
         manifest_report = {"status": "invalid_or_unreadable"}
         warnings.append("The local index manifest is invalid or unreadable.")
