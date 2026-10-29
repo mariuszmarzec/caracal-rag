@@ -197,13 +197,13 @@ def test_invalid_manifest_embedding_dim_fails_closed(tmp_path: Path) -> None:
 def test_collection_embedding_dim_metadata_path() -> None:
     class MetadataCollection:
         def get(self, include=None):
+            assert include == ["metadatas"]
             return {
                 "ids": ["a", "b"],
                 "metadatas": [
                     {"embedding_dim": 1024},
                     {"embedding_dim": 1024},
                 ],
-                "embeddings": [[0.0] * 1024, [0.0] * 1024],
             }
 
     assert collection_embedding_dim(MetadataCollection()) == 1024
