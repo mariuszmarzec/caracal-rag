@@ -19,13 +19,33 @@ def test_markdown_starting_with_heading_has_no_empty_leading_chunk() -> None:
 def test_markdown_groups_short_sections_without_exceeding_target() -> None:
     content = "# A\n\nalpha\n\n## B\n\nbravo\n\n## C\n\ncharlie"
 
-    chunks = chunk_markdown(content, max_chars=100, target_chars=30)
+    chunks = chunk_markdown(content, max_chars=100, target_chars=25)
 
     assert len(chunks) == 2
     assert chunks[0].startswith("# A")
     assert "## B" in chunks[0]
     assert chunks[1].startswith("## C")
-    assert all(len(chunk) <= 30 for chunk in chunks)
+    assert all(len(chunk) <= 25 for chunk in chunks)
+    assert "".join(chunks) == content
+
+
+def test_adjacent_short_sections_that_cross_target_stay_together() -> None:
+    content = (
+        "## Reducer\n\n"
+        "reducer updates state.\n\n"
+        "## Side effects\n\n"
+        "sideEffect records logs.\n\n"
+        "## Other\n\n"
+        "other info"
+    )
+
+    chunks = chunk_markdown(content, max_chars=100, target_chars=60)
+
+    assert len(chunks) == 2
+    assert "reducer" in chunks[0]
+    assert "sideEffect" in chunks[0]
+    assert "## Other" in chunks[1]
+    assert all(0 < len(chunk) <= 100 for chunk in chunks)
     assert "".join(chunks) == content
 
 
