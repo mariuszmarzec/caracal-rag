@@ -1,78 +1,138 @@
 {
   "version": 1,
-  "description": "Starter smoke-test set for the sources in config/sources.example.yaml. Source-level labels are intentionally coarse; replace them with relevant_urls after reviewing the audit report.",
+  "description": "URL-labelled starter smoke-test set. Verify every URL against the intended answer and expand this into a representative local evaluation set before treating metrics as a quality baseline.",
   "cases": [
     {
       "id": "fiteo-authentication",
       "query": "How should a client authenticate requests to the Fiteo API?",
-      "relevant_sources": ["fiteo-docs"],
-      "expected_terms": ["authorization", "token"]
+      "expected_terms": [
+        "authorization",
+        "token"
+      ],
+      "relevant_urls": [
+        "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/login_bearer.md"
+      ]
     },
     {
       "id": "fiteo-training-pagination",
       "query": "How does cursor pagination work for the trainings endpoint?",
-      "relevant_sources": ["fiteo-docs"],
-      "expected_terms": ["cursor", "trainings"]
+      "expected_terms": [
+        "cursor",
+        "trainings"
+      ],
+      "relevant_urls": [
+        "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/trainings_get.md"
+      ]
     },
     {
       "id": "fiteo-training-create",
       "query": "Which endpoint creates a training and what data does the client send?",
-      "relevant_sources": ["fiteo-docs"],
-      "expected_terms": ["training", "post"]
+      "expected_terms": [
+        "training",
+        "post"
+      ],
+      "relevant_urls": [
+        "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/trainings_create.md"
+      ]
     },
     {
       "id": "fiteo-training-update",
       "query": "How can a client update an existing training?",
-      "relevant_sources": ["fiteo-docs"],
-      "expected_terms": ["training", "update"]
+      "expected_terms": [
+        "training",
+        "update"
+      ],
+      "relevant_urls": [
+        "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/trainings_update.md"
+      ]
     },
     {
       "id": "fiteo-api-errors",
-      "query": "How are invalid requests and API errors represented?",
-      "relevant_sources": ["fiteo-docs"],
-      "expected_terms": ["error", "status"]
+      "query": "What error does the personal access token creation endpoint return for an invalid expiration policy?",
+      "expected_terms": [
+        "bad request",
+        "expiresIn"
+      ],
+      "relevant_urls": [
+        "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/pat_tokens_create.md"
+      ]
     },
     {
       "id": "fiteo-response-shapes",
-      "query": "Where can I find the response schema for an API endpoint?",
-      "relevant_sources": ["fiteo-docs"],
-      "expected_terms": ["response", "schema"]
+      "query": "What is the response event format for the server-sent events (SSE) endpoint?",
+      "expected_terms": [
+        "event",
+        "stream"
+      ],
+      "relevant_urls": [
+        "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/sse.md"
+      ]
     },
     {
       "id": "fiteo-personal-access-tokens",
       "query": "How are personal access tokens created and how long can they remain valid?",
-      "relevant_sources": ["fiteo-docs"],
-      "expected_terms": ["token", "expiration"]
+      "expected_terms": [
+        "token",
+        "expiration"
+      ],
+      "relevant_urls": [
+        "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/pat_tokens_create.md"
+      ]
     },
     {
       "id": "fiteo-filtering",
-      "query": "How can the API filter or search a collection of resources?",
-      "relevant_sources": ["fiteo-docs"],
-      "expected_terms": ["query", "filter"]
+      "query": "What does the GET categories endpoint return, and does it require authentication?",
+      "expected_terms": [
+        "categories",
+        "authentication"
+      ],
+      "relevant_urls": [
+        "https://raw.githubusercontent.com/mariuszmarzec/fiteo/master/docs/api/categories_get.md"
+      ]
     },
     {
       "id": "quickmvi-overview",
       "query": "What is QuickMVI and what problem does it solve?",
-      "relevant_sources": ["quickmvi-readme"],
-      "expected_terms": ["mvi", "kotlin"]
+      "expected_terms": [
+        "mvi",
+        "kotlin"
+      ],
+      "relevant_urls": [
+        "https://raw.githubusercontent.com/mariuszmarzec/QuickMVI/develop/README.md"
+      ]
     },
     {
       "id": "quickmvi-usage",
       "query": "How do I add QuickMVI to a project and start using it?",
-      "relevant_sources": ["quickmvi-readme"],
-      "expected_terms": ["gradle", "dependency"]
+      "expected_terms": [
+        "gradle",
+        "dependency"
+      ],
+      "relevant_urls": [
+        "https://raw.githubusercontent.com/mariuszmarzec/QuickMVI/develop/README.md"
+      ]
     },
     {
       "id": "quickmvi-architecture",
       "query": "How does QuickMVI structure state, actions, and side effects?",
-      "relevant_sources": ["quickmvi-readme"],
-      "expected_terms": ["state", "action"]
+      "expected_terms": [
+        "state",
+        "action"
+      ],
+      "relevant_urls": [
+        "https://raw.githubusercontent.com/mariuszmarzec/QuickMVI/develop/README.md"
+      ]
     },
     {
       "id": "quickmvi-platforms",
       "query": "Which platforms and Kotlin targets does QuickMVI support?",
-      "relevant_sources": ["quickmvi-readme"],
-      "expected_terms": ["kotlin", "multiplatform"]
+      "expected_terms": [
+        "kotlin",
+        "multiplatform"
+      ],
+      "relevant_urls": [
+        "https://raw.githubusercontent.com/mariuszmarzec/QuickMVI/develop/README.md"
+      ]
     }
   ]
 }

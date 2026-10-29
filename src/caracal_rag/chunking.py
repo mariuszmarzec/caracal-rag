@@ -31,7 +31,9 @@ def infer_type(name: str) -> str:
 
 def _md_sections(markdown: str) -> Iterable[tuple[int, int]]:
     headings = re.finditer(r"^#{1,6} .*$", markdown, re.MULTILINE)
-    positions = [0] + [m.start() for m in headings] + [len(markdown)]
+    # A heading at offset 0 duplicates the initial boundary. De-duplicate
+    # boundaries so the first section is the real content, not an empty chunk.
+    positions = sorted({0, *(match.start() for match in headings), len(markdown)})
     return [(positions[i], positions[i + 1]) for i in range(len(positions) - 1)]
 
 
