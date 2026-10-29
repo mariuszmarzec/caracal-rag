@@ -12,12 +12,11 @@ from typing import Any
 
 from caracal_rag.config import AppConfig, resolve_home
 from caracal_rag.embeddings import embed_texts
-from caracal_rag.manifest import load_manifest
+from caracal_rag.manifest import assert_manifest_consistent, load_manifest
 from caracal_rag.vectorstore import (
     _chroma_client,
     assert_embedding_dim_consistent,
     assert_embedding_model_consistent,
-    ensure_collection,
     search_chunks,
 )
 
@@ -52,7 +51,7 @@ def _collection_for(config: AppConfig):
         port=config.chroma.port,
         ssl=config.chroma.ssl,
     )
-    return ensure_collection(client, config.chroma.collection)
+    return client.get_collection(name=config.chroma.collection)
 
 
 def audit_index(config: AppConfig) -> dict[str, Any]:
@@ -373,6 +372,7 @@ def _query_results(response: dict[str, Any]) -> list[dict[str, Any]]:
                 "url": str(metadata.get("url") or ""),
                 "chunk_index": metadata.get("chunk_index"),
                 "distance": float(distance) if isinstance(distance, (int, float)) else None,
+                "content": str(content or ""),
                 "content_preview": str(content or "")[:240],
             }
         )
@@ -389,6 +389,7 @@ def benchmark_retrieval(
         raise ValueError(f"top_k must be an integer between 1 and {MAX_TOP_K}.")
     cases = load_benchmark_dataset(dataset_path)
     collection = _collection_for(config)
+    assert_manifest_consistent(resolve_home().manifest_path, config)
     assert_embedding_model_consistent(collection, config.embedding.model)
 
     case_results: list[dict[str, Any]] = []
@@ -427,9 +428,11 @@ def benchmark_retrieval(
                 found_targets.add(target)
                 relevant_ranks.append(result["rank"])
 
-        corpus_preview = "\n".join(result["content_preview"] for result in retrieved).casefold()
+        corpus_preview = "\n".join(result["content"] for result in retrieved).casefold()
         found_terms = [term for term in case["expected_terms"] if term.casefold() in corpus_preview]
         total_terms += len(case["expected_terms"])
+        for result in retrieved:
+            result.pop("content", None)
         matched_terms += len(found_terms)
         case_results.append(
             {
