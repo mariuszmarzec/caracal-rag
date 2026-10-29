@@ -204,7 +204,7 @@ def test_retrieval_benchmark_separates_document_hits_from_chunk_evidence(
     assert case["retrieved"][0]["is_evidence_chunk"] is False
     assert case["retrieved"][1]["is_evidence_chunk"] is False
     assert case["retrieved"][2]["is_evidence_chunk"] is True
-    assert "Bearer" not in case["retrieved"][2]["content_preview"]
+    assert "content" not in case["retrieved"][2]
     assert len(case["retrieved"]) == 3
 
 
