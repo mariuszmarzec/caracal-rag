@@ -172,10 +172,10 @@ These commands are opt-in local diagnostics. The CI test suite does not run them
 
 Run a read-only inspection of the configured Chroma collection. This command does not call the embedding API:
 
-\`\`\`bash
+```bash
 caracal-rag audit
 caracal-rag audit --output "$HOME/.caracal/index/audit-report.json"
-\`\`\`
+```
 
 The report includes committed and staging chunk counts, indexed document/source coverage, chunk-length distribution, empty chunks, missing metadata, duplicate text, stored embedding model/dimension metadata, manifest status, and warnings. The JSON report also lists each indexed document and its chunk counts. Keep reports local if your source names or URLs are private.
 
@@ -183,7 +183,7 @@ The report includes committed and staging chunk counts, indexed document/source 
 
 The retrieval benchmark embeds each test query using the configured embedding endpoint, runs the normal Caracal retrieval path against Chroma, and scores the ranked results against manually labelled ground truth. It does **not** generate answers with a chat LLM:
 
-\`\`\`bash
+```bash
 # Run the starter set from the repository root.
 caracal-rag benchmark --dataset benchmarks/queries.example.json --top-k 10
 
@@ -192,15 +192,15 @@ caracal-rag benchmark \
   --dataset benchmarks/queries.example.json \
   --top-k 10 \
   --output "$HOME/.caracal/index/retrieval-benchmark.json"
-\`\`\`
+```
 
-The command requires the configured Chroma collection and embedding endpoint to be reachable. The benchmark is never run by CI; \`pytest\` only tests the scoring and report logic with fake backend responses.
+The command requires the configured Chroma collection and embedding endpoint to be reachable. The benchmark is never run by CI; `pytest` only tests the scoring and report logic with fake backend responses.
 
-The starter set is a smoke test labelled mostly by source, which is deliberately coarse: it can tell whether retrieval reaches the expected source, but not whether it found the exact right page. For a meaningful quality baseline, create a private copy of \`benchmarks/queries.example.json\` and replace \`relevant_sources\` labels with one or more \`relevant_urls\` taken from the audit report. Add around 50 representative questions from real agent tasks, including paraphrases, Polish/English queries, multi-document questions and a few questions whose answer is absent from the index. Do not label a query as relevant to a document unless you have checked that document actually supports the expected answer.
+The starter set is a smoke test labelled mostly by source, which is deliberately coarse: it can tell whether retrieval reaches the expected source, but not whether it found the exact right page. For a meaningful quality baseline, create a private copy of `benchmarks/queries.example.json` and replace `relevant_sources` labels with one or more `relevant_urls` taken from the audit report. Add around 50 representative questions from real agent tasks, including paraphrases, Polish/English queries, multi-document questions and a few questions whose answer is absent from the index. Do not label a query as relevant to a document unless you have checked that document actually supports the expected answer.
 
-Each dataset is a UTF-8 JSON object with \`version: 1\` and a non-empty \`cases\` array. A case requires a unique \`id\`, a \`query\`, and at least one non-empty target list: \`relevant_urls\`, \`relevant_documents\`, or \`relevant_sources\`. When more than one target type is present, scoring uses the most specific available type in this order: URL, document name, then source. \`expected_terms\` is optional and reports whether selected terms appear in the retrieved snippets; it is a diagnostic, not a substitute for labelled relevance.
+Each dataset is a UTF-8 JSON object with `version: 1` and a non-empty `cases` array. A case requires a unique `id`, a `query`, and at least one non-empty target list: `relevant_urls`, `relevant_documents`, or `relevant_sources`. When more than one target type is present, scoring uses the most specific available type in this order: URL, document name, then source. `expected_terms` is optional and reports whether selected terms appear in the retrieved snippets; it is a diagnostic, not a substitute for labelled relevance.
 
-The report includes Hit Rate, Recall and Mean Reciprocal Rank (MRR) at the available cutoffs up to \`--top-k\`, plus expected-term coverage and mean query latency. Retrieval metrics are only as trustworthy as the ground-truth labels. Keep your dataset and reports local if the questions, document URLs or content previews reveal private information.
+The report includes Hit Rate, Recall and Mean Reciprocal Rank (MRR) at the available cutoffs up to `--top-k`, plus expected-term coverage and mean query latency. Retrieval metrics are only as trustworthy as the ground-truth labels. Keep your dataset and reports local if the questions, document URLs or content previews reveal private information.
 
 ## Running the Embedding Pipeline
 
