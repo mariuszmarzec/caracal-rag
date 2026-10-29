@@ -221,9 +221,9 @@ After the update succeeds, run the following from the repository root:
 
 ```bash
 caracal-rag audit --output "$HOME/.caracal/index/audit-report.json"
-caracal-rag benchmark \\
-  --dataset benchmarks/queries.example.json \\
-  --top-k 10 \\
+caracal-rag benchmark \
+  --dataset benchmarks/queries.example.json \
+  --top-k 10 \
   --output "$HOME/.caracal/index/retrieval-benchmark.json"
 ```
 
