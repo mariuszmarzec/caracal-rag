@@ -136,6 +136,7 @@ def test_retrieval_benchmark_scores_relevance_and_expected_terms(
     )
     collection = object()
     monkeypatch.setattr(benchmark, "_collection_for", lambda config: collection)
+    monkeypatch.setattr(benchmark, "assert_manifest_consistent", lambda *args: None)
     monkeypatch.setattr(benchmark, "assert_embedding_model_consistent", lambda *args: None)
     monkeypatch.setattr(benchmark, "assert_embedding_dim_consistent", lambda *args: None)
     monkeypatch.setattr(benchmark, "embed_texts", lambda *args, **kwargs: [[0.1, 0.2]])
@@ -144,7 +145,7 @@ def test_retrieval_benchmark_scores_relevance_and_expected_terms(
         "search_chunks",
         lambda _collection, _vector, top_k: {
             "ids": [["other", "auth"]],
-            "documents": [["general API page", "Bearer access token configuration"]],
+            "documents": [["general API page", ("x" * 240) + " Bearer access token configuration"]],
             "metadatas": [
                 [
                     {
@@ -174,6 +175,7 @@ def test_retrieval_benchmark_scores_relevance_and_expected_terms(
     assert report["metrics"]["mrr_at_5"] == 0.5
     assert report["expected_term_coverage"] == 1.0
     assert report["cases"][0]["found_targets"] == ["https://example.com/auth.md"]
+    assert "Bearer" not in report["cases"][0]["retrieved"][1]["content_preview"]
     assert len(report["cases"][0]["retrieved"]) == 2
 
 
