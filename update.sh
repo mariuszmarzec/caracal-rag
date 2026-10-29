@@ -208,7 +208,10 @@ cleanup_update() {
         rm -f -- "$LAUNCHER_TEMP" || echo "WARNING: could not remove temporary wrapper $LAUNCHER_TEMP" >&2
     fi
 
-    if [[ "$CANDIDATE_OWNED" == true && -n "$CANDIDATE_VENV" && -d "$CANDIDATE_VENV" && ! -L "$CANDIDATE_VENV" ]]; then
+    # A successful update intentionally leaves the promoted candidate active.
+    # Only inspect/remove the candidate during failed updates; otherwise this
+    # cleanup would incorrectly report the expected active candidate as a warning.
+    if [[ "$UPDATE_SUCCESS" != true && "$CANDIDATE_OWNED" == true && -n "$CANDIDATE_VENV" && -d "$CANDIDATE_VENV" && ! -L "$CANDIDATE_VENV" ]]; then
         local active_target candidate_target
         active_target=""
         if [[ -L "$ACTIVE_VENV" ]]; then
