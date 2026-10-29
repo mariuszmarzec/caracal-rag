@@ -438,6 +438,57 @@ def test_transient_fetch_failure_preserves_existing_vectors(
     assert "skipping deletion reconciliation" in capsys.readouterr().out
 
 
+def test_changed_chunk_text_with_same_count_is_refreshed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chunker changes must be detected even when source hash and chunk IDs stay equal."""
+    from caracal_rag.indexing import Indexer
+
+    source_text = "# Architecture\n\nThe source document is unchanged."
+    document = _make_markdown_doc(
+        "api", "architecture.md", "https://example.com/architecture.md", source_text
+    )
+    captured: dict[str, Any] = {}
+    _patch_embed(monkeypatch, captured)
+    collection = FakeCollection()
+    _patch_client(monkeypatch, collection)
+
+    chunk_texts = ["old first chunk", "old second chunk"]
+
+    def current_layout(doc, max_chars=1800):
+        return [
+            chunking.Chunk(
+                source=doc.source,
+                document=doc.name,
+                url=doc.url,
+                type=doc.type,
+                content_hash=doc.content_hash,
+                chunk_index=index,
+                text=text,
+            )
+            for index, text in enumerate(chunk_texts)
+        ]
+
+    monkeypatch.setattr("caracal_rag.indexing.chunk_document", current_layout)
+    _patch_documents(monkeypatch, [document])
+    Indexer(config=_make_config()).run()
+    assert captured["texts"] == ["old first chunk", "old second chunk"]
+    old_ids = set(collection._store)
+    assert len(old_ids) == 2
+
+    # Simulate a chunking-algorithm update: same source hash and same number of
+    # chunks, but the text assigned to each deterministic chunk ID has changed.
+    captured.clear()
+    chunk_texts[:] = ["new focused first chunk", "new focused second chunk"]
+    Indexer(config=_make_config()).run()
+
+    assert captured["texts"] == ["new focused first chunk", "new focused second chunk"]
+    assert set(collection._store) == old_ids
+    assert {
+        record["text"] for record in collection._store.values()
+    } == set(chunk_texts)
+
+
 def test_changed_chunk_count_is_refreshed(monkeypatch: pytest.MonkeyPatch) -> None:
     """A document with stale extra chunks must have them removed.
 

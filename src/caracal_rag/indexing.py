@@ -171,14 +171,12 @@ class Indexer:
         return not partial_load
 
     def _index_document(self, document: Document) -> None:
-        # Skip unchanged documents: if every chunk already exists with the same
-        # content hash, there is nothing to embed or upsert. The lookup uses the
-        # in-memory chunk metadata loaded once per run (see __init__), so this is
-        # O(chunks in the collection) at construction, not once per document.
-        if self._is_unchanged(document, self._existing_chunks):
+        # Compare the current chunk layout with persisted text as well as source
+        # metadata. The source hash alone cannot detect a chunking-algorithm change.
+        chunks = list(chunk_document(document))
+        if self._is_unchanged(document, self._existing_chunks, chunks):
             return
 
-        chunks = list(chunk_document(document))
         # A document whose content is whitespace-only still yields one empty
         # chunk via chunk_markdown; treat that as no content so stale chunks are
         # removed instead of an empty chunk being upserted.
@@ -397,13 +395,7 @@ class Indexer:
         }
 
     def _upsert_cached_chunks(self, chunks: Iterable[Chunk]) -> None:
-        """Reflect an upsert in the in-memory metadata cache.
-
-        The metadata written to the collection is the same the indexer computed,
-        so it can be mirrored in memory without another collection read. This
-        keeps the per-document work bounded and the cache accurate for the
-        remaining documents in the run.
-        """
+        """Reflect an upsert in the in-memory cache, including the stored chunk text."""
         for chunk in chunks:
             self._existing_chunks[_chunk_id(chunk)] = {
                 "source": chunk.source,
@@ -415,22 +407,23 @@ class Indexer:
                 "embedding_model": self.embedding_model,
                 "embedding_dim": self.embedding_dim,
                 "caracal_staging": False,
+                "_stored_chunk_text": chunk.text,
             }
 
-    def _is_unchanged(self, document: Document, existing: dict[str, dict]) -> bool:
-        """Return True when every chunk for this document already exists and matches.
+    def _is_unchanged(
+        self,
+        document: Document,
+        existing: dict[str, dict],
+        chunks: list[Chunk],
+    ) -> bool:
+        """Return True only when persisted chunks match the current chunk layout.
 
-        Compares the expected chunk-id set against the ids actually stored for
-        this document, so a shrinking chunk count (or a document that became
-        empty) is detected as a change and the document is refreshed. Checking
-        only the new chunks would leave stale vectors behind when the chunk
-        layout changes while the text stays the same.
-
-        The embedding model that produced the stored vectors is also compared:
-        if the configured model changed, the old vectors live in a different
-        embedding space and must never be treated as current.
+        Source hashes alone do not detect a chunker change: expected IDs, source
+        hash, URL and indices can stay the same while the text for each index
+        changes. Compare persisted chunk text too, so a re-index refreshes vectors
+        after chunking logic changes.
         """
-        expected_ids = {_chunk_id_for(chunk) for chunk in chunk_document(document)}
+        expected_ids = {_chunk_id_for(chunk) for chunk in chunks}
         stored_ids = {
             cid
             for cid, metadata in existing.items()
@@ -438,7 +431,7 @@ class Indexer:
         }
         if stored_ids != expected_ids:
             return False
-        for chunk in chunk_document(document):
+        for chunk in chunks:
             chunk_id = _chunk_id_for(chunk)
             metadata = existing.get(chunk_id)
             if metadata is None:
@@ -446,6 +439,8 @@ class Indexer:
             if metadata.get("content_hash") != document.content_hash:
                 return False
             if metadata.get("url") != chunk.url or metadata.get("chunk_index") != chunk.chunk_index:
+                return False
+            if metadata.get("_stored_chunk_text") != chunk.text:
                 return False
             if metadata.get("embedding_model") != self.embedding_model:
                 return False
