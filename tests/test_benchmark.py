@@ -19,6 +19,7 @@ litellm_stub.api_key = None
 sys.modules["litellm"] = litellm_stub
 
 from caracal_rag import benchmark  # noqa: E402
+from caracal_rag.manifest import build_manifest, write_manifest  # noqa: E402
 
 
 def _config():
@@ -83,6 +84,10 @@ def test_audit_index_reports_chunk_health_without_embedding_calls(
     )
     monkeypatch.setattr(benchmark, "_collection_for", lambda config: collection)
     monkeypatch.setenv("CARACAL_HOME", str(tmp_path))
+    write_manifest(
+        tmp_path / "index" / "manifest.json",
+        build_manifest(_config(), document_count=5, embedding_dim=1024),
+    )
     monkeypatch.setattr(
         benchmark,
         "embed_texts",
@@ -101,6 +106,8 @@ def test_audit_index_reports_chunk_health_without_embedding_calls(
     assert report["counts"]["missing_embedding_model_metadata"] == 1
     assert report["embedding_models"] == {"<missing>": 1, "bge-m3": 2}
     assert any("staging chunk" in warning for warning in report["warnings"])
+    assert any("manifest embedding dimension" in warning for warning in report["warnings"])
+    assert any("manifest document count" in warning for warning in report["warnings"])
 
 
 def test_load_benchmark_dataset_requires_ground_truth(tmp_path: Path) -> None:
