@@ -51,12 +51,12 @@ def test_adjacent_short_sections_that_cross_target_stay_together() -> None:
 
 def test_markdown_keeps_fenced_code_examples_as_retrieval_units() -> None:
     content = (
-        "## Architecture\\n\\n"
-        "The reducer updates state before effects run.\\n\\n"
-        "```kotlin\\n"
-        "reducer { state + 1 }\\n"
-        "sideEffect { println(state) }\\n"
-        "```\\n\\n"
+        "## Architecture\n\n"
+        "The reducer updates state before effects run.\n\n"
+        "```kotlin\n"
+        "reducer { state + 1 }\n"
+        "sideEffect { println(state) }\n"
+        "```\n\n"
         "This unrelated paragraph should not dilute the example embedding."
     )
 
