@@ -9,9 +9,33 @@ def test_markdown_starting_with_heading_has_no_empty_leading_chunk() -> None:
 
     chunks = chunk_markdown(content)
 
-    assert len(chunks) == 2
+    assert len(chunks) == 1
     assert chunks[0].startswith("# Login")
+    assert "## Expiration" in chunks[0]
     assert all(chunk.strip() for chunk in chunks)
+    assert "".join(chunks) == content
+
+
+def test_markdown_groups_short_sections_without_exceeding_target() -> None:
+    content = "# A\n\nalpha\n\n## B\n\nbravo\n\n## C\n\ncharlie"
+
+    chunks = chunk_markdown(content, max_chars=100, target_chars=30)
+
+    assert len(chunks) == 2
+    assert chunks[0].startswith("# A")
+    assert "## B" in chunks[0]
+    assert chunks[1].startswith("## C")
+    assert all(len(chunk) <= 30 for chunk in chunks)
+    assert "".join(chunks) == content
+
+
+def test_markdown_splits_oversized_sections_without_losing_text() -> None:
+    content = "# Intro\n\nShort.\n\n## Details\n\n" + ("detail text " * 15)
+
+    chunks = chunk_markdown(content, max_chars=40, target_chars=20)
+
+    assert len(chunks) > 2
+    assert all(0 < len(chunk) <= 40 for chunk in chunks)
     assert "".join(chunks) == content
 
 
