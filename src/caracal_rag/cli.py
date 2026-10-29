@@ -80,7 +80,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dataset", required=True, help="Path to a local benchmark dataset JSON file"
     )
     benchmark_parser.add_argument(
-        "--top-k", type=int, default=10, help="Number of retrieval results to evaluate (1-20)"
+        "--top-k",
+        type=int,
+        choices=range(1, 21),
+        default=10,
+        help="Number of retrieval results to evaluate (1-20)",
     )
     benchmark_parser.add_argument(
         "--config",
