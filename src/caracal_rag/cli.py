@@ -6,6 +6,7 @@ import os
 import sys
 
 from caracal_rag.auth import redact_token
+from caracal_rag.benchmark import audit_index, benchmark_retrieval, write_report
 from caracal_rag.config import (
     ACCESS_TOKEN_ENV,
     EMBEDDING_API_KEY_ENV,
@@ -57,6 +58,40 @@ def _repo_root() -> str | None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="caracal-rag")
     subparsers = parser.add_subparsers(dest="command")
+
+    audit_parser = subparsers.add_parser(
+        "audit", help="Inspect the existing index without calling the embedding API"
+    )
+    audit_parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to the active configuration file (default: the installed configuration)",
+    )
+    audit_parser.add_argument(
+        "--output", default=None, help="Write the detailed JSON report to this local file"
+    )
+
+    benchmark_parser = subparsers.add_parser(
+        "benchmark", help="Measure retrieval quality using a curated local JSON dataset"
+    )
+    benchmark_parser.add_argument(
+        "--dataset", required=True, help="Path to a local benchmark dataset JSON file"
+    )
+    benchmark_parser.add_argument(
+        "--top-k",
+        type=int,
+        choices=range(1, 21),
+        default=10,
+        help="Number of retrieval results to evaluate (1-20)",
+    )
+    benchmark_parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to the active configuration file (default: the installed configuration)",
+    )
+    benchmark_parser.add_argument(
+        "--output", default=None, help="Write the detailed JSON report to this local file"
+    )
 
     index_parser = subparsers.add_parser("index")
     index_parser.add_argument("--source", default=None, help="Index only the named source")
@@ -495,10 +530,85 @@ def run_setup(
     print("Run 'caracal-rag check' to validate connectivity.")
 
 
+def _print_audit_summary(report: dict, output_path: str | None) -> None:
+    counts = report["counts"]
+    print(f"collection={report['collection']}")
+    print(f"embedding_model_expected={report['expected_embedding_model']}")
+    for name in (
+        "total_chunks",
+        "committed_chunks",
+        "staging_chunks",
+        "documents",
+        "sources",
+        "empty_chunks",
+        "missing_embedding_model_metadata",
+        "missing_embedding_dimension_metadata",
+        "duplicate_chunk_text_groups",
+    ):
+        print(f"{name}={counts[name]}")
+    print(f"manifest_status={report['manifest']['status']}")
+    lengths = report["chunk_length_chars"]
+    print(
+        "chunk_length_chars="
+        f"min:{lengths['min']} median:{lengths['median']} mean:{lengths['mean']} "
+        f"p95:{lengths['p95']} max:{lengths['max']}"
+    )
+    for source in report["by_source"]:
+        print(
+            f"source={source['source']} documents={source['documents']} "
+            f"chunks={source['chunks']} characters={source['characters']}"
+        )
+    for warning in report["warnings"]:
+        print(f"warning={warning}")
+    if output_path:
+        destination = write_report(report, output_path)
+        print(f"report={destination}")
+
+
+def run_audit(config_path: str | None = None, output_path: str | None = None) -> None:
+    """Audit stored index content without embedding queries or invoking an LLM."""
+    config = load_active_config(config_path)
+    report = audit_index(config)
+    _print_audit_summary(report, output_path)
+
+
+def run_benchmark(
+    dataset_path: str,
+    top_k: int = 10,
+    config_path: str | None = None,
+    output_path: str | None = None,
+) -> None:
+    """Run the local retrieval benchmark; only the configured embedding endpoint is used."""
+    config = load_active_config(config_path)
+    _ensure_api_key(config)
+    report = benchmark_retrieval(config, dataset_path, top_k=top_k)
+    print(f"collection={report['collection']}")
+    print(f"embedding_model={report['embedding_model']}")
+    print(f"cases={report['case_count']} top_k={report['top_k']}")
+    print(f"mean_latency_ms={report['mean_latency_ms']}")
+    print(f"expected_term_coverage={report['expected_term_coverage']}")
+    for name, value in report["metrics"].items():
+        print(f"{name}={value}")
+    for case in report["cases"]:
+        best = case["retrieved"][0] if case["retrieved"] else {}
+        best_target = best.get("url") or best.get("document") or "<no results>"
+        print(
+            f"case={case['id']} hit={case['hit']} recall={case['recall']:.3f} "
+            f"mrr={case['reciprocal_rank']:.3f} first_result={best_target}"
+        )
+    if output_path:
+        destination = write_report(report, output_path)
+        print(f"report={destination}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "index":
+    if args.command == "audit":
+        run_audit(args.config, args.output)
+    elif args.command == "benchmark":
+        run_benchmark(args.dataset, args.top_k, args.config, args.output)
+    elif args.command == "index":
         run_index(args.source, args.config)
     elif args.command == "check":
         run_check(args.config)

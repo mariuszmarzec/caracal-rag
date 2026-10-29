@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "description": "Starter smoke-test set for the sources in config/sources.example.yaml. Source-level labels are intentionally coarse; replace them with relevant_urls after reviewing the audit report.",
+  "cases": [
+    {
+      "id": "fiteo-authentication",
+      "query": "How should a client authenticate requests to the Fiteo API?",
+      "relevant_sources": ["fiteo-docs"],
+      "expected_terms": ["authorization", "token"]
+    },
+    {
+      "id": "fiteo-training-pagination",
+      "query": "How does cursor pagination work for the trainings endpoint?",
+      "relevant_sources": ["fiteo-docs"],
+      "expected_terms": ["cursor", "trainings"]
+    },
+    {
+      "id": "fiteo-training-create",
+      "query": "Which endpoint creates a training and what data does the client send?",
+      "relevant_sources": ["fiteo-docs"],
+      "expected_terms": ["training", "post"]
+    },
+    {
+      "id": "fiteo-training-update",
+      "query": "How can a client update an existing training?",
+      "relevant_sources": ["fiteo-docs"],
+      "expected_terms": ["training", "update"]
+    },
+    {
+      "id": "fiteo-api-errors",
+      "query": "How are invalid requests and API errors represented?",
+      "relevant_sources": ["fiteo-docs"],
+      "expected_terms": ["error", "status"]
+    },
+    {
+      "id": "fiteo-response-shapes",
+      "query": "Where can I find the response schema for an API endpoint?",
+      "relevant_sources": ["fiteo-docs"],
+      "expected_terms": ["response", "schema"]
+    },
+    {
+      "id": "fiteo-personal-access-tokens",
+      "query": "How are personal access tokens created and how long can they remain valid?",
+      "relevant_sources": ["fiteo-docs"],
+      "expected_terms": ["token", "expiration"]
+    },
+    {
+      "id": "fiteo-filtering",
+      "query": "How can the API filter or search a collection of resources?",
+      "relevant_sources": ["fiteo-docs"],
+      "expected_terms": ["query", "filter"]
+    },
+    {
+      "id": "quickmvi-overview",
+      "query": "What is QuickMVI and what problem does it solve?",
+      "relevant_sources": ["quickmvi-readme"],
+      "expected_terms": ["mvi", "kotlin"]
+    },
+    {
+      "id": "quickmvi-usage",
+      "query": "How do I add QuickMVI to a project and start using it?",
+      "relevant_sources": ["quickmvi-readme"],
+      "expected_terms": ["gradle", "dependency"]
+    },
+    {
+      "id": "quickmvi-architecture",
+      "query": "How does QuickMVI structure state, actions, and side effects?",
+      "relevant_sources": ["quickmvi-readme"],
+      "expected_terms": ["state", "action"]
+    },
+    {
+      "id": "quickmvi-platforms",
+      "query": "Which platforms and Kotlin targets does QuickMVI support?",
+      "relevant_sources": ["quickmvi-readme"],
+      "expected_terms": ["kotlin", "multiplatform"]
+    }
+  ]
+}

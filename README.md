@@ -164,6 +164,71 @@ Three source types are supported in `sources.yaml`:
 * `github_md_doc_dir` – recursively fetch `.md` files from a GitHub repository directory (e.g., Fiteo API docs at `mariuszmarzec/fiteo`, `docs/api`, `master`).
 * `local` – index all `.md` files recursively from a local folder.
 
+## Local Index Audit and Retrieval Benchmark
+
+These commands are opt-in local diagnostics. The CI test suite does not run them and does not need access to Chroma or an embedding/LLM endpoint; their unit tests use deterministic fakes.
+
+### Audit what is stored
+
+Run a read-only inspection of the configured Chroma collection. This command does not call the embedding API:
+
+```bash
+caracal-rag audit
+caracal-rag audit --output "$HOME/.caracal/index/audit-report.json"
+```
+
+The report includes committed and staging chunk counts, indexed document/source coverage, chunk-length distribution, empty chunks, missing metadata, duplicate text, stored embedding model/dimension metadata, manifest status, and warnings. The JSON report also lists each indexed document and its chunk counts. Keep reports local if your source names or URLs are private.
+
+### Measure retrieval quality
+
+The retrieval benchmark embeds each test query using the configured embedding endpoint, runs the normal Caracal retrieval path against Chroma, and scores the ranked results against manually labelled ground truth. It does **not** generate answers with a chat LLM:
+
+```bash
+# Run the starter set from the repository root.
+caracal-rag benchmark --dataset benchmarks/queries.example.json --top-k 10
+
+# Save the full per-query result details locally.
+caracal-rag benchmark \
+  --dataset benchmarks/queries.example.json \
+  --top-k 10 \
+  --output "$HOME/.caracal/index/retrieval-benchmark.json"
+```
+
+The command requires the configured Chroma collection and embedding endpoint to be reachable. The benchmark is never run by CI; `pytest` only tests the scoring and report logic with fake backend responses.
+
+The starter set is a smoke test labelled mostly by source, which is deliberately coarse: it can tell whether retrieval reaches the expected source, but not whether it found the exact right page. For a meaningful quality baseline, create a private copy of `benchmarks/queries.example.json` and replace `relevant_sources` labels with one or more `relevant_urls` taken from the audit report. Add around 50 representative, answerable questions from real agent tasks, including paraphrases, Polish/English queries and multi-document questions. This command measures retrieval against known relevant sources; questions whose answers are absent from the index need a separate end-to-end abstention/answer-grounding benchmark. Do not label a query as relevant to a document unless you have checked that document actually supports the expected answer.
+
+Each dataset is a UTF-8 JSON object with `version: 1` and a non-empty `cases` array. A case requires a unique `id`, a `query`, and at least one non-empty target list: `relevant_urls`, `relevant_documents`, or `relevant_sources`. When more than one target type is present, scoring uses the most specific available type in this order: URL, document name, then source. `expected_terms` is optional and reports whether selected terms appear in the retrieved snippets; it is a diagnostic, not a substitute for labelled relevance.
+
+The report includes Hit Rate, Recall and Mean Reciprocal Rank (MRR) at the available cutoffs up to `--top-k`, plus expected-term coverage and mean query latency. Retrieval metrics are only as trustworthy as the ground-truth labels. Keep your dataset and reports local if the questions, document URLs or content previews reveal private information.
+
+
+### Update an existing installation
+
+The Python package runs from the active environment under `~/.caracal`, while the commands below are run from the source checkout (normally `~/.caracal-rag`). Once the benchmark changes are on the branch you use for updates, run:
+
+```bash
+cd "$HOME/.caracal-rag"
+git status --short
+bash ./update.sh
+```
+
+The default updater requires a clean worktree and an upstream branch, performs a fast-forward-only pull, installs a candidate environment, and runs `caracal-rag check` before activating it. It preserves `~/.caracal/config/sources.yaml`, `secrets.yaml`, the local manifest and the Chroma collection; it does not rebuild or delete the index. It also does not restart an MCP process.
+
+If the checkout already contains the benchmark code but you intentionally want to install that checkout without pulling from Git, run `bash ./update.sh --no-pull` from the repository root. Use this only when the current checkout actually contains the changes you want to install. The source checkout must remain available because the starter dataset lives at `benchmarks/queries.example.json`.
+
+After the update succeeds, run the following from the repository root:
+
+```bash
+caracal-rag audit --output "$HOME/.caracal/index/audit-report.json"
+caracal-rag benchmark \
+  --dataset benchmarks/queries.example.json \
+  --top-k 10 \
+  --output "$HOME/.caracal/index/retrieval-benchmark.json"
+```
+
+The audit needs Chroma but not the embedding endpoint. The retrieval benchmark needs both Chroma and the configured embedding endpoint, but no chat LLM. If `caracal-rag` is not on `PATH`, use `"$HOME/.caracal/bin/caracal-rag"` in place of `caracal-rag`.
+
 ## Running the Embedding Pipeline
 
 Build or update the index:

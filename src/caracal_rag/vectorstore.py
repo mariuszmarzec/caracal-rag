@@ -223,40 +223,55 @@ def assert_embedding_model_consistent(collection, model: str) -> None:
 
 
 def collection_embedding_dim(collection) -> int | None:
-    """Return the dimension of the vectors stored in the collection.
+    """Return the dimension of vectors stored in the collection.
 
-    The dimension is read from the committed chunk metadata first (the fast
-    path, written by every upsert since dimension tracking existed). When no
-    committed row carries it -- a legacy collection built before dimension
-    tracking -- the stored vectors themselves are inspected as a fallback so
-    the dimension can still be derived without re-embedding.
-
-    Returns ``None`` when the collection holds no committed vectors at all
-    (an empty or staging-only collection has no recorded embedding space).
-
-    Raises ``ValueError`` when committed rows disagree on dimension, i.e. the
-    collection holds vectors from two different embedding spaces. Such a
-    mixed collection is unsafe to index or search against and must be rebuilt.
+    The normal fast path reads committed chunk metadata only, avoiding a download
+    of every vector for collections built with dimension tracking. If any
+    committed row has missing/invalid dimension metadata, stored vectors are
+    fetched as a fallback for legacy collections.
     """
+    metadata_result = collection.get(include=["metadatas"])
+    metadatas = metadata_result.get("metadatas") or []
+    committed_metadata = [
+        metadata or {}
+        for metadata in metadatas
+        if not (metadata or {}).get("caracal_staging", False)
+    ]
+    if not committed_metadata:
+        return None
+
+    metadata_dims: set[int] = set()
+    missing_dimension = False
+    for metadata in committed_metadata:
+        dim = metadata.get("embedding_dim")
+        if isinstance(dim, int) and not isinstance(dim, bool) and dim > 0:
+            metadata_dims.add(dim)
+        else:
+            missing_dimension = True
+
+    if len(metadata_dims) > 1:
+        raise ValueError(
+            f"Collection holds committed vectors from {sorted(metadata_dims)!r}-"
+            "dimensional embedding spaces. Mixing dimensions produces "
+            "meaningless search results. Rebuild the index with the current "
+            "model or point the configuration at a separate collection."
+        )
+    if not missing_dimension:
+        return next(iter(metadata_dims))
+
     existing = collection.get(include=["metadatas", "embeddings"])
-    metadatas = existing.get("metadatas") or []
+    all_metadatas = existing.get("metadatas") or []
     embeddings = existing.get("embeddings")
     if embeddings is None:
         embeddings = []
 
-    committed: list[dict] = []
-    for metadata, vector in zip(metadatas, embeddings):
-        if not (metadata or {}).get("caracal_staging", False):
-            committed.append({"metadata": metadata or {}, "vector": vector})
-
-    if not committed:
-        return None
-
     dims: set[int] = set()
-    for record in committed:
-        dim = (record["metadata"] or {}).get("embedding_dim")
+    for metadata, vector in zip(all_metadatas, embeddings):
+        metadata = metadata or {}
+        if metadata.get("caracal_staging", False):
+            continue
+        dim = metadata.get("embedding_dim")
         if dim is None:
-            vector = record["vector"]
             if vector is None:
                 raise ValueError(
                     "Collection holds committed vectors with no embedding_dim "
@@ -266,7 +281,7 @@ def collection_embedding_dim(collection) -> int | None:
                     "collection."
                 )
             dim = len(vector)
-        if not isinstance(dim, int) or dim <= 0:
+        if not isinstance(dim, int) or isinstance(dim, bool) or dim <= 0:
             raise ValueError(
                 "Collection holds committed vectors with an invalid "
                 f"embedding_dim {dim!r}; the embedding space is unknown. Rebuild "
@@ -281,7 +296,7 @@ def collection_embedding_dim(collection) -> int | None:
             "meaningless search results. Rebuild the index with the current "
             "model or point the configuration at a separate collection."
         )
-    return next(iter(dims))
+    return next(iter(dims)) if dims else None
 
 
 def assert_embedding_dim_consistent(collection, observed_dim: int) -> None:
