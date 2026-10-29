@@ -38,7 +38,7 @@ def _md_sections(markdown: str) -> Iterable[tuple[int, int]]:
 
 
 def _markdown_blocks(section: str) -> list[str]:
-    """Split a Markdown section into paragraphs while keeping fenced code atomic."""
+    """Split a Markdown section into paragraphs, preserving fenced code blocks."""
     lines = section.splitlines(keepends=True)
     blocks: list[str] = []
     current: list[str] = []
@@ -46,19 +46,37 @@ def _markdown_blocks(section: str) -> list[str]:
     fence_length = 0
 
     for line in lines:
-        current.append(line)
         stripped = line.lstrip()
         fence_match = re.match(r"(`{3,}|~{3,})", stripped)
-        if fence_match:
+
+        if fence_character is None and fence_match:
+            # A fence may immediately follow a list item without a blank line.
+            # Flush prose before opening it so the example becomes its own unit.
+            if current:
+                blocks.append("".join(current))
+                current.clear()
+            current.append(line)
             marker = fence_match.group(1)
-            if fence_character is None:
-                fence_character = marker[0]
-                fence_length = len(marker)
-            elif marker[0] == fence_character and len(marker) >= fence_length:
+            fence_character = marker[0]
+            fence_length = len(marker)
+            continue
+
+        current.append(line)
+        if fence_character is not None:
+            if (
+                fence_match
+                and fence_match.group(1)[0] == fence_character
+                and len(fence_match.group(1)) >= fence_length
+            ):
+                # Close and flush the complete code block immediately, even if
+                # the following prose/list item has no intervening blank line.
                 fence_character = None
                 fence_length = 0
+                blocks.append("".join(current))
+                current.clear()
+            continue
 
-        if fence_character is None and not line.strip():
+        if not line.strip():
             blocks.append("".join(current))
             current.clear()
 
@@ -74,7 +92,7 @@ def _markdown_blocks(section: str) -> list[str]:
         non_empty_lines = [line for line in block.splitlines() if line.strip()]
         heading_only = (
             len(non_empty_lines) == 1
-            and re.match(r"^#{1,6}[ \t]+", non_empty_lines[0]) is not None
+            and re.match(r"^#{1,6}[ \\t]+", non_empty_lines[0]) is not None
         )
         if heading_only and index + 1 < len(blocks):
             merged.append(block + blocks[index + 1])
@@ -83,7 +101,6 @@ def _markdown_blocks(section: str) -> list[str]:
             merged.append(block)
             index += 1
     return merged
-
 
 def _chunk_code_section(section: str, max_chars: int, target_chars: int) -> list[str]:
     """Chunk a fenced-code Markdown section by prose/code blocks.
