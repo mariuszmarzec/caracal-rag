@@ -601,6 +601,7 @@ def test_successful_update_promotes_candidate_and_retains_previous_venv(
     active = env.caracal_home / "venv"
     generations = env.caracal_home / "venvs"
     assert proc.returncode == 0, proc.stderr
+    assert "WARNING: candidate remains active because rollback could not safely displace it" not in proc.stderr
     assert active.is_symlink()
     candidate = active.resolve()
     assert candidate.parent == generations.resolve()
@@ -624,6 +625,7 @@ def test_successful_update_promotes_candidate_and_retains_previous_venv(
     # retaining the previous generation instead of attempting to move it.
     second = env.run_update("--no-pull")
     assert second.returncode == 0, second.stderr
+    assert "WARNING: candidate remains active because rollback could not safely displace it" not in second.stderr
     second_candidate = active.resolve()
     assert second_candidate != first_candidate
     assert second_candidate.is_dir()
@@ -640,6 +642,7 @@ def test_skip_check_still_validates_entry_point_and_promotes_candidate(
 
     active = env.caracal_home / "venv"
     assert proc.returncode == 0, proc.stderr
+    assert "WARNING: candidate remains active because rollback could not safely displace it" not in proc.stderr
     assert active.is_symlink()
     assert (active.resolve() / "bin" / "caracal-rag").is_file()
     env.assert_not_ran(env.check_log)
