@@ -127,11 +127,24 @@ def delete_missing_documents(
 
 
 def get_existing_chunks(collection) -> dict[str, dict]:
-    """Return a mapping of chunk id -> metadata for every chunk in the collection."""
-    existing = collection.get(include=["metadatas"])
+    """Return stored metadata and text for each chunk, keyed by chunk id.
+
+    Keeping the persisted text beside metadata lets the indexer detect chunker
+    changes that alter chunk boundaries/content without changing the source
+    document hash or the number of deterministic chunk IDs.
+    """
+    existing = collection.get(include=["documents", "metadatas"])
     ids = existing.get("ids") or []
+    documents = existing.get("documents") or []
     metadatas = existing.get("metadatas") or []
-    return {chunk_id: metadata or {} for chunk_id, metadata in zip(ids, metadatas)}
+    chunks: dict[str, dict] = {}
+    for index, (chunk_id, metadata) in enumerate(zip(ids, metadatas)):
+        record = dict(metadata or {})
+        record["_stored_chunk_text"] = (
+            documents[index] if index < len(documents) else None
+        )
+        chunks[chunk_id] = record
+    return chunks
 
 
 def collection_embedding_models(collection) -> set[str]:
