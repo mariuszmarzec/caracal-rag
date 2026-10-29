@@ -49,6 +49,29 @@ def test_adjacent_short_sections_that_cross_target_stay_together() -> None:
     assert "".join(chunks) == content
 
 
+def test_markdown_keeps_fenced_code_examples_as_retrieval_units() -> None:
+    content = (
+        "## Architecture\\n\\n"
+        "The reducer updates state before effects run.\\n\\n"
+        "```kotlin\\n"
+        "reducer { state + 1 }\\n"
+        "sideEffect { println(state) }\\n"
+        "```\\n\\n"
+        "This unrelated paragraph should not dilute the example embedding."
+    )
+
+    chunks = chunk_markdown(content, max_chars=200, target_chars=60)
+    evidence_chunks = [
+        chunk for chunk in chunks if "reducer" in chunk and "sideEffect" in chunk
+    ]
+
+    assert len(evidence_chunks) == 1
+    assert "```kotlin" in evidence_chunks[0]
+    assert "unrelated paragraph" not in evidence_chunks[0]
+    assert all(0 < len(chunk) <= 200 for chunk in chunks)
+    assert "".join(chunks) == content
+
+
 def test_markdown_preserves_larger_sections_below_maximum() -> None:
     first_section = "# Details\n\n" + ("x" * 50) + "\n\n"
     second_section = "## More\n\nshort"
