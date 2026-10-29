@@ -67,10 +67,16 @@ def chunk_markdown(
             flush_buffer()
             chunks.append(section)
         else:
-            if buffered_sections and buffered_length + len(section) > target_chars:
+            # Preserve adjacent short sections together when the next section
+            # crosses the target. The target is a soft boundary; max_chars is
+            # the hard limit. Flush before adding only when the hard limit
+            # would otherwise be exceeded.
+            if buffered_sections and buffered_length + len(section) > max_chars:
                 flush_buffer()
             buffered_sections.append(section)
             buffered_length += len(section)
+            if buffered_length >= target_chars:
+                flush_buffer()
 
     flush_buffer()
     return chunks or [text]
