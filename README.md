@@ -179,6 +179,8 @@ caracal-rag audit --output "$HOME/.caracal/index/audit-report.json"
 
 The report includes committed and staging chunk counts, indexed document/source coverage, chunk-length distribution, empty chunks, missing metadata, duplicate text, stored embedding model/dimension metadata, manifest status, and warnings. The JSON report also lists each indexed document and its chunk counts. Keep reports local if your source names or URLs are private.
 
+If the audit reports empty or whitespace-only chunks, update Caracal to a version containing the Markdown chunk-boundary fix, then run `caracal-rag index` to refresh documents whose chunk layout changed. Run the audit again afterwards. Do not delete the Chroma collection just to fix chunking; normal indexing should replace the affected document chunks safely.
+
 ### Measure retrieval quality
 
 The retrieval benchmark embeds each test query using the configured embedding endpoint, runs the normal Caracal retrieval path against Chroma, and scores the ranked results against manually labelled ground truth. It does **not** generate answers with a chat LLM:
@@ -196,7 +198,7 @@ caracal-rag benchmark \
 
 The command requires the configured Chroma collection and embedding endpoint to be reachable. The benchmark is never run by CI; `pytest` only tests the scoring and report logic with fake backend responses.
 
-The starter set is a smoke test labelled mostly by source, which is deliberately coarse: it can tell whether retrieval reaches the expected source, but not whether it found the exact right page. For a meaningful quality baseline, create a private copy of `benchmarks/queries.example.json` and replace `relevant_sources` labels with one or more `relevant_urls` taken from the audit report. Add around 50 representative, answerable questions from real agent tasks, including paraphrases, Polish/English queries and multi-document questions. This command measures retrieval against known relevant sources; questions whose answers are absent from the index need a separate end-to-end abstention/answer-grounding benchmark. Do not label a query as relevant to a document unless you have checked that document actually supports the expected answer.
+The checked-in 12-case starter set now uses `relevant_urls` rather than source-wide labels, so a hit requires retrieving the intended document, not merely any page from the same source. It remains a smoke test, not a statistically strong quality baseline: manually verify that each labelled URL actually supports the query, because labels selected without reading the target documents can still make the scores misleading. For a meaningful baseline, create a private dataset with around 50 representative, answerable questions from real agent tasks, including paraphrases, Polish/English queries and multi-document questions. Questions whose answers are absent from the index need a separate end-to-end abstention/answer-grounding benchmark.
 
 Each dataset is a UTF-8 JSON object with `version: 1` and a non-empty `cases` array. A case requires a unique `id`, a `query`, and at least one non-empty target list: `relevant_urls`, `relevant_documents`, or `relevant_sources`. When more than one target type is present, scoring uses the most specific available type in this order: URL, document name, then source. `expected_terms` is optional and reports whether selected terms appear in the retrieved snippets; it is a diagnostic, not a substitute for labelled relevance.
 
