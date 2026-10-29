@@ -77,7 +77,15 @@ def _markdown_blocks(section: str) -> list[str]:
             continue
 
         if not line.strip():
-            blocks.append("".join(current))
+            if any(existing.strip() for existing in current):
+                blocks.append("".join(current))
+            elif blocks:
+                # A blank line may immediately follow a code fence that was
+                # already flushed; attach the separator instead of making an
+                # empty chunk.
+                blocks[-1] += "".join(current)
+            else:
+                blocks.append("".join(current))
             current.clear()
 
     if current:
@@ -101,6 +109,7 @@ def _markdown_blocks(section: str) -> list[str]:
             merged.append(block)
             index += 1
     return merged
+
 
 def _chunk_code_section(section: str, max_chars: int, target_chars: int) -> list[str]:
     """Chunk a fenced-code Markdown section by prose/code blocks.
